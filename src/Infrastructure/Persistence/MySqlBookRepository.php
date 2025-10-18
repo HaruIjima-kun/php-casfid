@@ -120,4 +120,59 @@ final class MySqlBookRepository implements BookRepository
         $stmt->execute();
     }
 
+    public function update(string $id, array $data): bool
+    {
+        $sql = "UPDATE libros SET
+              titulo = :titulo,
+              autor = :autor,
+              isbn = :isbn,
+              anio_publicacion = :anio_publicacion,
+              descripcion = :descripcion,
+              portada_url = :portada_url,
+              updated_at = :updated_at,
+              updated_by = :updated_by
+            WHERE id = :id AND deleted_at IS NULL";
+        $stmt = $this->pdo->prepare($sql);
+        $stmt->bindValue(':id', $id);
+        $stmt->bindValue(':titulo', $data['titulo']);
+        $stmt->bindValue(':autor', $data['autor']);
+        $stmt->bindValue(':isbn', $data['isbn']);
+        $stmt->bindValue(':anio_publicacion', $data['anio_publicacion'], $data['anio_publicacion'] === null ? PDO::PARAM_NULL : PDO::PARAM_INT);
+        $stmt->bindValue(':descripcion', $data['descripcion']);
+        $stmt->bindValue(':portada_url', $data['portada_url']);
+        $stmt->bindValue(':updated_at', $data['updated_at']);
+        $stmt->bindValue(':updated_by', $data['updated_by']);
+        $stmt->execute();
+        return $stmt->rowCount() > 0;
+    }
+
+    public function softDelete(string $id, string $when, string $by): bool
+    {
+        $sql = "UPDATE libros SET deleted_at = :when, deleted_by = :by WHERE id = :id AND deleted_at IS NULL";
+        $stmt = $this->pdo->prepare($sql);
+        $stmt->bindValue(':id', $id);
+        $stmt->bindValue(':when', $when);
+        $stmt->bindValue(':by', $by);
+        $stmt->execute();
+        return $stmt->rowCount() > 0;
+    }
+
+    public function hardDelete(string $id): bool
+    {
+        $stmt = $this->pdo->prepare("DELETE FROM libros WHERE id = :id");
+        $stmt->bindValue(':id', $id);
+        $stmt->execute();
+        return $stmt->rowCount() > 0;
+    }
+
+    public function findById(string $id): ?array
+    {
+        $stmt = $this->pdo->prepare("SELECT * FROM libros WHERE id = :id");
+        $stmt->bindValue(':id', $id);
+        $stmt->execute();
+        $row = $stmt->fetch(PDO::FETCH_ASSOC);
+        return $row ?: null;
+    }
+
+
 }
