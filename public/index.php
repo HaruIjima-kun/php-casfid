@@ -36,6 +36,10 @@ $books  = new BookController($config);
 $router->get('/health',       [$health, 'status']);
 $router->post('/auth/login',  [$auth, 'login']);
 $router->get('/api/v1/libros',[$books, 'index']);
+$router->post('/api/v1/libros', function(\App\Infrastructure\Http\Request $req) use ($config, $books) {
+    (new \App\Infrastructure\Http\Middlewares\AuthMiddleware($config))->requireAuth($req, ['admin','usuario']);
+    $books->store($req);
+});
 
 /**
  * Ejemplo de ruta protegida (cuando implementemos el método):
