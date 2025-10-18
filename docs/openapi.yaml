@@ -1,0 +1,175 @@
+openapi: 3.0.3
+info:
+  title: BooksAPI
+  version: 1.0.0
+  description: API para gestión de libros con enriquecimiento desde Open Library.
+servers:
+  - url: http://localhost:8080
+paths:
+  /health:
+    get:
+      summary: Healthcheck
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/Envelope'}
+  /auth/login:
+    post:
+      summary: Autenticación (JWT)
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [username, password]
+              properties:
+                username: {type: string}
+                password: {type: string}
+      responses:
+        '200':
+          description: Token emitido
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/Envelope'}
+        '401':
+          description: Credenciales inválidas
+  /api/v1/libros:
+    get:
+      summary: Listado paginado y búsqueda local
+      parameters:
+        - in: query; name: q; schema: {type: string}; description: Búsqueda por título/autor (normalizada)
+        - in: query; name: titulo; schema: {type: string}
+        - in: query; name: autor; schema: {type: string}
+        - in: query; name: page; schema: {type: integer, minimum: 1, default: 1}
+        - in: query; name: per_page; schema: {type: integer, minimum: 1, maximum: 100, default: 20}
+        - in: query; name: sort; schema: {type: string, enum: [titulo, autor, anio_publicacion, created_at], default: titulo}
+        - in: query; name: direction; schema: {type: string, enum: [asc, desc], default: asc}
+      responses:
+        '200':
+          description: Lista de libros
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/Envelope'}
+    post:
+      summary: Crear libro
+      security: [{ bearerAuth: [] }]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [titulo, autor, isbn]
+              properties:
+                titulo: {type: string, maxLength: 150}
+                autor: {type: string, maxLength: 100}
+                isbn: {type: string}
+                anio_publicacion: {type: integer, nullable: true}
+      responses:
+        '201': {description: Creado}
+        '400': {description: Validación}
+        '401': {description: No autenticado}
+        '409': {description: ISBN duplicado}
+  /api/v1/libros/{id}:
+    parameters:
+      - in: path; name: id; required: true; schema: {type: string, format: uuid}
+    put:
+      summary: Actualizar libro
+      security: [{ bearerAuth: [] }]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                titulo: {type: string, maxLength: 150}
+                autor: {type: string, maxLength: 100}
+                isbn: {type: string}
+                anio_publicacion: {type: integer, nullable: true}
+      responses:
+        '200': {description: Actualizado}
+        '400': {description: Validación}
+        '401': {description: No autenticado}
+        '404': {description: No encontrado}
+        '409': {description: ISBN duplicado}
+    delete:
+      summary: Borrar (soft/hard por config)
+      security: [{ bearerAuth: [] }]
+      responses:
+        '204': {description: Borrado}
+        '401': {description: No autenticado}
+        '404': {description: No encontrado}
+  /api/v1/libros/buscar/titulo:
+    get:
+      summary: Búsqueda por título
+      parameters:
+        - in: query; name: q; schema: {type: string}
+      responses:
+        '200': {description: OK}
+  /api/v1/libros/buscar/autor:
+    get:
+      summary: Búsqueda por autor
+      parameters:
+        - in: query; name: q; schema: {type: string}
+      responses:
+        '200': {description: OK}
+
+components:
+  securitySchemes:
+    bearerAuth:
+      type: http
+      scheme: bearer
+      bearerFormat: JWT
+  schemas:
+    Book:
+      type: object
+      properties:
+        id: {type: string, format: uuid}
+        titulo: {type: string}
+        autor: {type: string}
+        isbn: {type: string}
+        anio_publicacion: {type: integer, nullable: true}
+        descripcion: {type: string, nullable: true}
+        portada_url: {type: string, format: uri, nullable: true}
+        created_at: {type: string, format: date-time}
+        created_by: {type: string}
+        updated_at: {type: string, format: date-time, nullable: true}
+        updated_by: {type: string, nullable: true}
+        deleted_at: {type: string, format: date-time, nullable: true}
+        deleted_by: {type: string, nullable: true}
+    ErrorItem:
+      type: object
+      properties:
+        code: {type: string}
+        message: {type: string}
+        details: {type: object, additionalProperties: true, nullable: true}
+        trace: {type: array, items: {type: string}, nullable: true}
+    Meta:
+      type: object
+      properties:
+        request_id: {type: string}
+        page: {type: integer}
+        per_page: {type: integer}
+        total: {type: integer}
+        sort: {type: string}
+        direction: {type: string}
+        external_status: {type: integer}
+    Envelope:
+      type: object
+      properties:
+        data:
+          oneOf:
+            - {$ref: '#/components/schemas/Book'}
+            - type: array
+              items: {$ref: '#/components/schemas/Book'}
+            - type: object
+            - type: 'null'
+        meta: {$ref: '#/components/schemas/Meta'}
+        errors:
+          type: array
+          items: {$ref: '#/components/schemas/ErrorItem'}
+          nullable: true
