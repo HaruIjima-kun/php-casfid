@@ -10,7 +10,12 @@ final class Response
         http_response_code($status);
         header('Content-Type: application/json; charset=utf-8');
 
-        // Asegura campos data/meta/errors en el sobre estándar
+        // Si el middleware ya puso X-Request-Id, lo incluimos en meta automáticamente
+        $rid = $_SERVER['X_REQUEST_ID'] ?? null;
+        if ($rid && !isset($meta['request_id'])) {
+            $meta['request_id'] = $rid;
+        }
+
         echo json_encode([
             'data'   => $data,
             'meta'   => $meta,
