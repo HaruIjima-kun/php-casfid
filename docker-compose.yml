@@ -12,7 +12,6 @@ services:
     environment:
       - NGINX_ENTRYPOINT_QUIET_LOGS=1
 
-
   app:
     build: .
     volumes:
@@ -22,7 +21,6 @@ services:
     depends_on:
       - mysql
       - redis
-
 
   mysql:
     image: mysql:8.0
@@ -37,7 +35,6 @@ services:
     volumes:
       - dbdata:/var/lib/mysql
 
-
   redis:
     image: redis:7-alpine
     ports:
@@ -45,5 +42,5 @@ services:
     command: ["redis-server", "--appendonly", "yes"]
 
 
-  volumes:
-    dbdata:
+volumes:
+  dbdata:
