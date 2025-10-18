@@ -2,26 +2,36 @@
 declare(strict_types=1);
 
 use App\Infrastructure\Config\Config;
+use App\Infrastructure\Http\Response;
 
 require __DIR__ . '/../vendor/autoload.php';
 
-// Carga configuración (usa .env y variables de entorno del contenedor)
 $config = new Config(__DIR__ . '/../.env');
 
-// Datos mínimos para responder
+$uri = $_SERVER['REQUEST_URI'] ?? '/';
+$path = parse_url($uri, PHP_URL_PATH) ?: '/';
+
+// Header temporal de request_id (luego será middleware)
+$requestId = bin2hex(random_bytes(8));
+header('X-Request-Id: ' . $requestId);
+
+// Rutas temporales
+if ($path === '/health') {
+    return Response::json(
+        ['ok' => true, 'name' => $config->get('APP_NAME', 'BooksAPI')],
+        ['request_id' => $requestId],
+        null,
+        200
+    );
+}
+
+// Default hello
 $appName = $config->get('APP_NAME', 'BooksAPI');
 $env     = $config->get('APP_ENV', 'local');
 
-http_response_code(200);
-header('Content-Type: application/json; charset=utf-8');
-
-echo json_encode([
-    'data' => [
-        'message' => "Hello from {$appName}",
-        'env'     => $env,
-    ],
-    'meta'   => [
-        'request_id' => bin2hex(random_bytes(8)), // temporal (luego lo hará el middleware)
-    ],
-    'errors' => null
-], JSON_UNESCAPED_UNICODE);
+Response::json(
+    ['message' => "Hello from {$appName}", 'env' => $env],
+    ['request_id' => $requestId],
+    null,
+    200
+);
