@@ -42,6 +42,24 @@ $router->post('/api/v1/libros', function(\App\Infrastructure\Http\Request $req) 
 });
 
 /**
+ * Búsquedas
+ */
+// Buscar por título
+$router->get('/api/v1/libros/buscar/titulo', function(\App\Infrastructure\Http\Request $req) use ($books) {
+    // Reutilizamos index con query 'titulo'
+    $_GET['titulo'] = $req->queryParam('q','');
+    $books->index($req);
+});
+
+// Buscar por autor
+$router->get('/api/v1/libros/buscar/autor', function(\App\Infrastructure\Http\Request $req) use ($books) {
+    $_GET['autor'] = $req->queryParam('q','');
+    $books->index($req);
+});
+
+
+
+/**
  * Rutas protegidas
  */
 // PUT /api/v1/libros/{id}
