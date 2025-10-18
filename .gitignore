@@ -10,5 +10,5 @@ vendor/
 composer.lock
 
 
-storage/covers/*
-storage/logs/*
+public/storage/covers/*
+public/storage/logs/*
