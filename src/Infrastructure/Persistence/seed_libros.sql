@@ -1,0 +1,7 @@
+INSERT INTO libros (id, titulo, autor, isbn, anio_publicacion, descripcion, portada_url, created_at, created_by)
+VALUES
+    ('11111111-1111-1111-1111-111111111111','El nombre del viento','Patrick Rothfuss','9788401337208',2007,'Un joven llamado Kvothe narra su vida.','https://covers.openlibrary.org/b/isbn/9788401337208-L.jpg', NOW(), '00000000-0000-0000-0000-000000000001'),
+    ('22222222-2222-2222-2222-222222222222','El temor de un hombre sabio','Patrick Rothfuss','9788401343087',2011,'Segunda parte de la Crónica del Asesino de Reyes.','https://covers.openlibrary.org/b/isbn/9788401343087-L.jpg', NOW(), '00000000-0000-0000-0000-000000000001'),
+    ('33333333-3333-3333-3333-333333333333','La comunidad del anillo','J. R. R. Tolkien','9788445071438',1954,'Primera parte de El Señor de los Anillos.','https://covers.openlibrary.org/b/isbn/9788445071438-L.jpg', NOW(), '00000000-0000-0000-0000-000000000001'),
+    ('44444444-4444-4444-4444-444444444444','La torre de la golondrina','Andrzej Sapkowski','9788498890253',1997,'Saga de Geralt de Rivia.','https://covers.openlibrary.org/b/isbn/9788498890253-L.jpg', NOW(), '00000000-0000-0000-0000-000000000001'),
+    ('55555555-5555-5555-5555-555555555555','El prisma negro','Brent Weeks','9788498726361',2010,'Primera novela de El Portador de Luz.','https://covers.openlibrary.org/b/isbn/9788498726361-L.jpg', NOW(), '00000000-0000-0000-0000-000000000001');
