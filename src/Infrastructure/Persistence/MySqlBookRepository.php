@@ -97,4 +97,27 @@ final class MySqlBookRepository implements BookRepository
 
         return ['items' => $items, 'total' => $total];
     }
+
+    public function create(array $data): void
+    {
+        $sql = "INSERT INTO libros
+            (id, titulo, autor, isbn, anio_publicacion, descripcion, portada_url,
+             created_at, created_by, updated_at, updated_by, deleted_at, deleted_by)
+            VALUES
+            (:id, :titulo, :autor, :isbn, :anio_publicacion, :descripcion, :portada_url,
+             :created_at, :created_by, NULL, NULL, NULL, NULL)";
+
+        $stmt = $this->pdo->prepare($sql);
+        $stmt->bindValue(':id', $data['id']);
+        $stmt->bindValue(':titulo', $data['titulo']);
+        $stmt->bindValue(':autor', $data['autor']);
+        $stmt->bindValue(':isbn', $data['isbn']);
+        $stmt->bindValue(':anio_publicacion', $data['anio_publicacion'], $data['anio_publicacion'] === null ? PDO::PARAM_NULL : PDO::PARAM_INT);
+        $stmt->bindValue(':descripcion', $data['descripcion']);
+        $stmt->bindValue(':portada_url', $data['portada_url']);
+        $stmt->bindValue(':created_at', $data['created_at']);
+        $stmt->bindValue(':created_by', $data['created_by']);
+        $stmt->execute();
+    }
+
 }
