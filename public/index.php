@@ -6,6 +6,7 @@ use App\Infrastructure\Config\Config;
 use App\Infrastructure\Http\{Request, Response, Router};
 use App\Infrastructure\Http\Middlewares\RequestIdMiddleware;
 use App\Interfaces\Http\Controllers\AuthController;
+use App\Interfaces\Http\Controllers\BookController;
 use App\Interfaces\Http\Controllers\HealthController;
 
 
@@ -18,6 +19,10 @@ $router = new Router();
 // Autenticación
 $auth = new AuthController($config);
 $router->post('/auth/login', [$auth, 'login']);
+
+// Gestión de libros
+$books = new BookController($config);
+$router->get('/api/v1/libros', [$books, 'index']);
 
 // Middleware (temporalmente invocado aquí antes del dispatch)
 $request = Request::fromGlobals();
