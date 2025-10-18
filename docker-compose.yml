@@ -1,0 +1,49 @@
+services:
+  nginx:
+    image: nginx:1.27-alpine
+    ports:
+      - "8080:80"
+    volumes:
+      - ./public:/var/www/html/public
+      - ./nginx.conf:/etc/nginx/conf.d/default.conf:ro
+      - ./:/var/www/html
+    depends_on:
+      - app
+    environment:
+      - NGINX_ENTRYPOINT_QUIET_LOGS=1
+
+
+  app:
+    build: .
+    volumes:
+      - ./:/var/www/html
+    env_file:
+      - .env
+    depends_on:
+      - mysql
+      - redis
+
+
+  mysql:
+    image: mysql:8.0
+    environment:
+      - MYSQL_DATABASE=books
+      - MYSQL_USER=books
+      - MYSQL_PASSWORD=secret
+      - MYSQL_ROOT_PASSWORD=root
+    command: ["--default-time-zone=+02:00", "--character-set-server=utf8mb4", "--collation-server=utf8mb4_general_ci"]
+    ports:
+      - "3307:3306"
+    volumes:
+      - dbdata:/var/lib/mysql
+
+
+  redis:
+    image: redis:7-alpine
+    ports:
+      - "6379:6379"
+    command: ["redis-server", "--appendonly", "yes"]
+
+
+  volumes:
+    dbdata:
