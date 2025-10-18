@@ -307,11 +307,8 @@ final class BookController
 
     private function extractIdFromPath(string $path): ?string
     {
-        // Espera '/api/v1/libros/{uuid}'
-        $parts = explode('/', trim($path, '/'));
-        $idx = array_search('libros', $parts, true);
-        if ($idx !== false && isset($parts[$idx+1])) return $parts[$idx+1];
-        return null;
+        return $_SERVER['ROUTE_PARAMS']['id'] ?? null;
     }
+
 
 }
