@@ -5,16 +5,238 @@ info:
   description: API para gestión de libros con enriquecimiento desde Open Library.
 servers:
   - url: http://localhost:8080
+
+components:
+  securitySchemes:
+    bearerAuth:
+      type: http
+      scheme: bearer
+      bearerFormat: JWT
+
+  schemas:
+    Envelope:
+      type: object
+      required: [data, meta]
+      properties:
+        data:
+          nullable: true
+        meta:
+          $ref: '#/components/schemas/Meta'
+        errors:
+          type: array
+          items: {$ref: '#/components/schemas/ErrorItem'}
+          nullable: true
+
+    Meta:
+      type: object
+      properties:
+        request_id: {type: string, description: Identificador de traza por solicitud}
+        page: {type: integer}
+        per_page: {type: integer}
+        total: {type: integer}
+        sort: {type: string}
+        direction: {type: string, enum: [asc, desc]}
+        external_status: {type: integer, description: Estado de la API externa si hubo fallo parcial}
+
+    ErrorItem:
+      type: object
+      required: [code, message]
+      properties:
+        code: {type: string}
+        message: {type: string}
+        details:
+          type: object
+          additionalProperties: true
+          nullable: true
+        trace:
+          type: array
+          items: {type: string}
+          nullable: true
+
+    Book:
+      type: object
+      required: [id, titulo, autor, isbn, created_at, created_by]
+      properties:
+        id: {type: string, format: uuid}
+        titulo: {type: string, maxLength: 150}
+        autor: {type: string, maxLength: 100}
+        isbn: {type: string}
+        anio_publicacion: {type: integer, nullable: true}
+        descripcion: {type: string, nullable: true, maxLength: 2000}
+        portada_url: {type: string, format: uri, nullable: true}
+        created_at: {type: string, format: date-time}
+        created_by: {type: string}
+        updated_at: {type: string, format: date-time, nullable: true}
+        updated_by: {type: string, nullable: true}
+        deleted_at: {type: string, format: date-time, nullable: true}
+        deleted_by: {type: string, nullable: true}
+
+  responses:
+    OkEnvelope:
+      description: OK
+      content:
+        application/json:
+          schema: {$ref: '#/components/schemas/Envelope'}
+          examples:
+            ok:
+              value:
+                data: { ok: true, name: "BooksAPI", time: "2025-10-18T12:00:00+00:00" }
+                meta: { request_id: "abc123" }
+                errors: null
+
+    ListBooks:
+      description: Lista de libros paginada
+      content:
+        application/json:
+          schema: {$ref: '#/components/schemas/Envelope'}
+          examples:
+            page1:
+              value:
+                data:
+                  - id: "11111111-1111-1111-1111-111111111111"
+                    titulo: "El nombre del viento"
+                    autor: "Patrick Rothfuss"
+                    isbn: "9788401337208"
+                    anio_publicacion: 2007
+                    descripcion: "Un joven llamado Kvothe narra su vida."
+                    portada_url: "https://covers.openlibrary.org/b/isbn/9788401337208-L.jpg"
+                    created_at: "2025-10-18 18:24:23"
+                    created_by: "00000000-0000-0000-0000-000000000001"
+                    updated_at: null
+                    updated_by: null
+                    deleted_at: null
+                    deleted_by: null
+                meta:
+                  request_id: "req-1"
+                  page: 1
+                  per_page: 20
+                  total: 5
+                  sort: "titulo"
+                  direction: "asc"
+                errors: null
+
+    BookCreated:
+      description: Libro creado
+      content:
+        application/json:
+          schema: {$ref: '#/components/schemas/Envelope'}
+          examples:
+            created:
+              value:
+                data:
+                  id: "9e8f0b2b-6a4d-4a3f-9f5a-5d24f74a4a62"
+                  titulo: "Libro de prueba"
+                  autor: "Foo Bar"
+                  isbn: "9788490322383"
+                  anio_publicacion: 2010
+                  descripcion: "Primera novela de El Portador de Luz."
+                  portada_url: "https://covers.openlibrary.org/b/isbn/9788490322383-L.jpg"
+                meta:
+                  request_id: "req-2"
+                errors: null
+
+    BookOk:
+      description: Libro actualizado/consultado correctamente
+      content:
+        application/json:
+          schema: {$ref: '#/components/schemas/Envelope'}
+          examples:
+            ok:
+              value:
+                data:
+                  id: "9e8f0b2b-6a4d-4a3f-9f5a-5d24f74a4a62"
+                  titulo: "Libro de prueba (ed. revisada)"
+                  autor: "Foo Bar"
+                  isbn: "9788490322383"
+                  anio_publicacion: 2011
+                  descripcion: "Actualizado"
+                  portada_url: "https://covers.openlibrary.org/b/isbn/9788490322383-L.jpg"
+                meta: { request_id: "req-3" }
+                errors: null
+
+    ErrorValidation:
+      description: Error de validación
+      content:
+        application/json:
+          schema: {$ref: '#/components/schemas/Envelope'}
+          examples:
+            invalid:
+              value:
+                data: null
+                meta: { request_id: "req-val" }
+                errors:
+                  - code: "VALIDATION_ERROR"
+                    message: "Errores de validación"
+                    details: { isbn: "inválido" }
+
+    ErrorUnauthorized:
+      description: No autenticado
+      content:
+        application/json:
+          schema: {$ref: '#/components/schemas/Envelope'}
+          examples:
+            unauth:
+              value:
+                data: null
+                meta: { request_id: "req-unauth" }
+                errors: [{ code: "UNAUTHORIZED", message: "Missing Bearer token" }]
+
+    ErrorForbidden:
+      description: Rol insuficiente
+      content:
+        application/json:
+          schema: {$ref: '#/components/schemas/Envelope'}
+          examples:
+            forb:
+              value:
+                data: null
+                meta: { request_id: "req-forb" }
+                errors: [{ code: "FORBIDDEN", message: "Insufficient role" }]
+
+    ErrorNotFound:
+      description: Recurso no encontrado
+      content:
+        application/json:
+          schema: {$ref: '#/components/schemas/Envelope'}
+          examples:
+            missing:
+              value:
+                data: null
+                meta: { request_id: "req-miss" }
+                errors: [{ code: "NOT_FOUND", message: "Libro no encontrado" }]
+
+    ErrorConflict:
+      description: Conflicto (único ISBN)
+      content:
+        application/json:
+          schema: {$ref: '#/components/schemas/Envelope'}
+          examples:
+            dup:
+              value:
+                data: null
+                meta: { request_id: "req-dup" }
+                errors: [{ code: "CONFLICT", message: "ISBN ya existe" }]
+
+    ErrorTooMany:
+      description: Rate limited
+      content:
+        application/json:
+          schema: {$ref: '#/components/schemas/Envelope'}
+          examples:
+            rl:
+              value:
+                data: null
+                meta: { request_id: "req-rl" }
+                errors: [{ code: "RATE_LIMITED", message: "Too many requests" }]
+
 paths:
   /health:
     get:
       summary: Healthcheck
       responses:
         '200':
-          description: OK
-          content:
-            application/json:
-              schema: {$ref: '#/components/schemas/Envelope'}
+          $ref: '#/components/responses/OkEnvelope'
+
   /auth/login:
     post:
       summary: Autenticación (JWT)
@@ -28,14 +250,15 @@ paths:
               properties:
                 username: {type: string}
                 password: {type: string}
+            examples:
+              admin:
+                value: { username: "admin", password: "admin123" }
       responses:
         '200':
-          description: Token emitido
-          content:
-            application/json:
-              schema: {$ref: '#/components/schemas/Envelope'}
+          $ref: '#/components/responses/OkEnvelope'
         '401':
-          description: Credenciales inválidas
+          $ref: '#/components/responses/ErrorUnauthorized'
+
   /api/v1/libros:
     get:
       summary: Listado paginado y búsqueda local
@@ -49,10 +272,7 @@ paths:
         - in: query; name: direction; schema: {type: string, enum: [asc, desc], default: asc}
       responses:
         '200':
-          description: Lista de libros
-          content:
-            application/json:
-              schema: {$ref: '#/components/schemas/Envelope'}
+          $ref: '#/components/responses/ListBooks'
     post:
       summary: Crear libro
       security: [{ bearerAuth: [] }]
@@ -68,11 +288,21 @@ paths:
                 autor: {type: string, maxLength: 100}
                 isbn: {type: string}
                 anio_publicacion: {type: integer, nullable: true}
+            examples:
+              ok:
+                value: { titulo: "Libro de prueba", autor: "Foo Bar", isbn: "9788490322383" }
       responses:
-        '201': {description: Creado}
-        '400': {description: Validación}
-        '401': {description: No autenticado}
-        '409': {description: ISBN duplicado}
+        '201':
+          $ref: '#/components/responses/BookCreated'
+        '400':
+          $ref: '#/components/responses/ErrorValidation'
+        '401':
+          $ref: '#/components/responses/ErrorUnauthorized'
+        '409':
+          $ref: '#/components/responses/ErrorConflict'
+        '429':
+          $ref: '#/components/responses/ErrorTooMany'
+
   /api/v1/libros/{id}:
     parameters:
       - in: path; name: id; required: true; schema: {type: string, format: uuid}
@@ -90,86 +320,48 @@ paths:
                 autor: {type: string, maxLength: 100}
                 isbn: {type: string}
                 anio_publicacion: {type: integer, nullable: true}
+            examples:
+              patch-title:
+                value: { titulo: "Libro (ed. revisada)" }
       responses:
-        '200': {description: Actualizado}
-        '400': {description: Validación}
-        '401': {description: No autenticado}
-        '404': {description: No encontrado}
-        '409': {description: ISBN duplicado}
+        '200':
+          $ref: '#/components/responses/BookOk'
+        '400':
+          $ref: '#/components/responses/ErrorValidation'
+        '401':
+          $ref: '#/components/responses/ErrorUnauthorized'
+        '404':
+          $ref: '#/components/responses/ErrorNotFound'
+        '409':
+          $ref: '#/components/responses/ErrorConflict'
+        '429':
+          $ref: '#/components/responses/ErrorTooMany'
     delete:
       summary: Borrar (soft/hard por config)
       security: [{ bearerAuth: [] }]
       responses:
-        '204': {description: Borrado}
-        '401': {description: No autenticado}
-        '404': {description: No encontrado}
+        '204':
+          description: Borrado
+        '401':
+          $ref: '#/components/responses/ErrorUnauthorized'
+        '404':
+          $ref: '#/components/responses/ErrorNotFound'
+        '429':
+          $ref: '#/components/responses/ErrorTooMany'
+
   /api/v1/libros/buscar/titulo:
     get:
       summary: Búsqueda por título
       parameters:
         - in: query; name: q; schema: {type: string}
       responses:
-        '200': {description: OK}
+        '200':
+          $ref: '#/components/responses/ListBooks'
   /api/v1/libros/buscar/autor:
     get:
       summary: Búsqueda por autor
       parameters:
         - in: query; name: q; schema: {type: string}
       responses:
-        '200': {description: OK}
-
-components:
-  securitySchemes:
-    bearerAuth:
-      type: http
-      scheme: bearer
-      bearerFormat: JWT
-  schemas:
-    Book:
-      type: object
-      properties:
-        id: {type: string, format: uuid}
-        titulo: {type: string}
-        autor: {type: string}
-        isbn: {type: string}
-        anio_publicacion: {type: integer, nullable: true}
-        descripcion: {type: string, nullable: true}
-        portada_url: {type: string, format: uri, nullable: true}
-        created_at: {type: string, format: date-time}
-        created_by: {type: string}
-        updated_at: {type: string, format: date-time, nullable: true}
-        updated_by: {type: string, nullable: true}
-        deleted_at: {type: string, format: date-time, nullable: true}
-        deleted_by: {type: string, nullable: true}
-    ErrorItem:
-      type: object
-      properties:
-        code: {type: string}
-        message: {type: string}
-        details: {type: object, additionalProperties: true, nullable: true}
-        trace: {type: array, items: {type: string}, nullable: true}
-    Meta:
-      type: object
-      properties:
-        request_id: {type: string}
-        page: {type: integer}
-        per_page: {type: integer}
-        total: {type: integer}
-        sort: {type: string}
-        direction: {type: string}
-        external_status: {type: integer}
-    Envelope:
-      type: object
-      properties:
-        data:
-          oneOf:
-            - {$ref: '#/components/schemas/Book'}
-            - type: array
-              items: {$ref: '#/components/schemas/Book'}
-            - type: object
-            - type: 'null'
-        meta: {$ref: '#/components/schemas/Meta'}
-        errors:
-          type: array
-          items: {$ref: '#/components/schemas/ErrorItem'}
-          nullable: true
+        '200':
+          $ref: '#/components/responses/ListBooks'
