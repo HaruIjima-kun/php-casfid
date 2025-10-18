@@ -42,6 +42,23 @@ $router->post('/api/v1/libros', function(\App\Infrastructure\Http\Request $req) 
 });
 
 /**
+ * Rutas protegidas
+ */
+// PUT /api/v1/libros/{id}
+$router->put('/api/v1/libros', function(\App\Infrastructure\Http\Request $req) use ($config, $books) {
+    (new \App\Infrastructure\Http\Middlewares\AuthMiddleware($config))->requireAuth($req, ['admin','usuario']);
+    $books->update($req);
+});
+
+// DELETE /api/v1/libros/{id}
+$router->delete('/api/v1/libros', function(\App\Infrastructure\Http\Request $req) use ($config, $books) {
+    (new \App\Infrastructure\Http\Middlewares\AuthMiddleware($config))->requireAuth($req, ['admin','usuario']);
+    $books->destroy($req);
+});
+
+
+
+/**
  * Ejemplo de ruta protegida (cuando implementemos el método):
  * $router->post('/api/v1/libros', function(Request $req) use ($config, $books) {
  *     (new AuthMiddleware($config))->requireAuth($req, ['admin','usuario']);
