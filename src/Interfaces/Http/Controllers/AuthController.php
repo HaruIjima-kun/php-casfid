@@ -30,13 +30,13 @@ final class AuthController
             'admin' => [
                 'id' => '00000000-0000-0000-0000-000000000001',
                 'role' => 'admin',
-                'hash' => '$2y$10$e0iR3bVvE2kB0qN1rWeFqO1oQO7iG1GUR9w5dyu2H7hE3w5mCIE9a'
+                'hash' => '$2y$10$ZQWwCcIkgoEwBD6nFi0/dOD.fNPBX4yC22seP0V5qYZrDC.Z.MZba'
             ],
             // password: user1234
             'user' => [
                 'id' => '00000000-0000-0000-0000-000000000002',
                 'role' => 'usuario',
-                'hash' => '$2y$10$w5pV2E2zJ0t7tF7qf3qvUuKxJ9y0v3bG4cd2QeOQ7sQd0r2Zk9d7K'
+                'hash' => '$2y$10$OKIFRac1G90imWLLBRlly.QMHR9ghZBzjW27Gho7rvPEW6lSrk9jW'
             ],
         ];
 
