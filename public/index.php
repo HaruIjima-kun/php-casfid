@@ -4,6 +4,8 @@ declare(strict_types=1);
 use App\Infrastructure\Config\Config;
 use App\Infrastructure\Http\{Request, Response, Router};
 use App\Infrastructure\Http\Middlewares\{RequestIdMiddleware, RateLimitMiddleware, AuthMiddleware};
+use App\Infrastructure\Logging\Logger;
+use App\Infrastructure\Http\Middlewares\ErrorHandler;
 use App\Interfaces\Http\Controllers\{HealthController, AuthController, BookController};
 
 require __DIR__ . '/../vendor/autoload.php';
@@ -14,6 +16,10 @@ require __DIR__ . '/../vendor/autoload.php';
 $config  = new Config(__DIR__ . '/../.env');
 $request = Request::fromGlobals();
 $router  = new Router();
+
+// Logger + Error handler global
+$logger = new Logger($config);
+(new ErrorHandler($logger, $config))->register();
 
 /**
  * Middlewares globales
