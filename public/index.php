@@ -3,33 +3,35 @@ declare(strict_types=1);
 
 use App\Infrastructure\Config\Config;
 use App\Infrastructure\Http\{Request, Response, Router};
+use App\Infrastructure\Http\Middlewares\RequestIdMiddleware;
+use App\Interfaces\Http\Controllers\HealthController;
 
 require __DIR__ . '/../vendor/autoload.php';
 
 $config = new Config(__DIR__ . '/../.env');
-$requestId = bin2hex(random_bytes(8));
-header('X-Request-Id: ' . $requestId);
 
-// Instancia Router
 $router = new Router();
 
-// /health
-$router->get('/health', function(Request $req) use ($config, $requestId) {
-    Response::json(
-        ['ok' => true, 'name' => $config->get('APP_NAME', 'BooksAPI')],
-        ['request_id' => $requestId]
-    );
-});
+// Middleware (temporalmente invocado aquí antes del dispatch)
+$request = Request::fromGlobals();
+$reqIdMw = new RequestIdMiddleware();
+$reqIdMw->handle($request);
 
-// /
-$router->get('/', function(Request $req) use ($config, $requestId) {
+// Controlador de salud
+$health = new HealthController($config);
+$router->get('/health', [$health, 'status']);
+
+// Ruta raíz (temporal)
+$router->get('/', function(Request $req) use ($config) {
     $appName = $config->get('APP_NAME', 'BooksAPI');
     $env     = $config->get('APP_ENV', 'local');
+    $rid     = $_SERVER['X_REQUEST_ID'] ?? null;
+
     Response::json(
         ['message' => "Hello from {$appName}", 'env' => $env],
-        ['request_id' => $requestId]
+        $rid ? ['request_id' => $rid] : []
     );
 });
 
 // Dispatch
-$router->dispatch(Request::fromGlobals());
+$router->dispatch($request);
