@@ -1,16 +1,23 @@
 <?php
 declare(strict_types=1);
 
+
 use App\Infrastructure\Config\Config;
 use App\Infrastructure\Http\{Request, Response, Router};
 use App\Infrastructure\Http\Middlewares\RequestIdMiddleware;
+use App\Interfaces\Http\Controllers\AuthController;
 use App\Interfaces\Http\Controllers\HealthController;
+
 
 require __DIR__ . '/../vendor/autoload.php';
 
 $config = new Config(__DIR__ . '/../.env');
 
 $router = new Router();
+
+// Autenticación
+$auth = new AuthController($config);
+$router->post('/auth/login', [$auth, 'login']);
 
 // Middleware (temporalmente invocado aquí antes del dispatch)
 $request = Request::fromGlobals();
