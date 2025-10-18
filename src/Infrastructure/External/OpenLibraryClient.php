@@ -5,12 +5,14 @@ namespace App\Infrastructure\External;
 
 use App\Infrastructure\Cache\RedisCache;
 use App\Infrastructure\Config\Config;
+use App\Infrastructure\Logging\Logger;
 use GuzzleHttp\Client;
 use Redis;
 
 final class OpenLibraryClient
 {
     private Client $http;
+    private Logger $logger;
     private RedisCache $cache;
     private Redis $redis;
     private int $timeout;
@@ -28,6 +30,7 @@ final class OpenLibraryClient
         $redis->connect($config->get('REDIS_HOST', 'redis') ?? 'redis', (int)($config->get('REDIS_PORT', '6379') ?? '6379'), 1.0);
         $this->redis = $redis;
         $this->cache = new RedisCache($redis);
+        $this->logger = new Logger($config);
     }
 
     private function throttle(): void
@@ -43,13 +46,18 @@ final class OpenLibraryClient
     {
         $key = 'ol:isbn:' . $isbn;
         return $this->cache->remember($key, $this->ttl, function () use ($isbn) {
-            $this->throttle();
-            $resp = $this->http->get('https://openlibrary.org/api/books', [
-                'query' => ['bibkeys' => 'ISBN:' . $isbn, 'format' => 'json', 'jscmd' => 'data'],
-                'timeout' => $this->timeout,
-            ]);
-            $json = json_decode((string)$resp->getBody(), true) ?? [];
-            return $json['ISBN:' . $isbn] ?? [];
+            try {
+                $this->throttle();
+                $resp = $this->http->get('https://openlibrary.org/api/books', [
+                    'query' => ['bibkeys' => 'ISBN:' . $isbn, 'format' => 'json', 'jscmd' => 'data'],
+                    'timeout' => $this->timeout,
+                ]);
+                $json = json_decode((string)$resp->getBody(), true) ?? [];
+                return $json['ISBN:' . $isbn] ?? [];
+            } catch (\Throwable $e) {
+                $this->logger->warning('openlibrary.isbn.failed', ['isbn' => $isbn, 'error' => $e->getMessage()]);
+                return [];
+            }
         });
     }
 
@@ -57,12 +65,17 @@ final class OpenLibraryClient
     {
         $key = 'ol:search:' . md5($title . '|' . $author);
         return $this->cache->remember($key, $this->ttl, function () use ($title, $author) {
-            $this->throttle();
-            $resp = $this->http->get('https://openlibrary.org/search.json', [
-                'query' => ['title' => $title, 'author' => $author, 'limit' => 1],
-                'timeout' => $this->timeout,
-            ]);
-            return json_decode((string)$resp->getBody(), true) ?? [];
+            try {
+                $this->throttle();
+                $resp = $this->http->get('https://openlibrary.org/search.json', [
+                    'query' => ['title' => $title, 'author' => $author, 'limit' => 1],
+                    'timeout' => $this->timeout,
+                ]);
+                return json_decode((string)$resp->getBody(), true) ?? [];
+            } catch (\Throwable $e) {
+                $this->logger->warning('openlibrary.search.failed', ['title' => $title, 'author' => $author, 'error' => $e->getMessage()]);
+                return [];
+            }
         });
     }
 }
