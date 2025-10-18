@@ -183,4 +183,135 @@ final class BookController
         ], $meta, null, 201);
     }
 
+    public function update(\App\Infrastructure\Http\Request $req): void
+    {
+        $userId = $_SERVER['AUTH_USER_ID'] ?? null;
+        $body = $req->json() ?? [];
+
+        $id     = $this->extractIdFromPath($req->path()); // helper abajo
+        if (!$id) { \App\Infrastructure\Http\Response::json(null, [], [['code'=>'BAD_REQUEST','message'=>'Missing id']], 400); return; }
+
+        // Verifica existencia (aunque sea borrado)
+        $exists = $this->repo->findById($id);
+        if (!$exists || $exists['deleted_at'] !== null) {
+            \App\Infrastructure\Http\Response::json(null, [], [['code'=>'NOT_FOUND','message'=>'Libro no encontrado']], 404);
+            return;
+        }
+
+        $titulo = trim((string)($body['titulo'] ?? $exists['titulo']));
+        $autor  = trim((string)($body['autor']  ?? $exists['autor']));
+        $isbnIn = trim((string)($body['isbn']   ?? $exists['isbn']));
+        $anio   = array_key_exists('anio_publicacion', $body) ? ( ($body['anio_publicacion']===''||$body['anio_publicacion']===null) ? null : (int)$body['anio_publicacion'] ) : ($exists['anio_publicacion'] !== null ? (int)$exists['anio_publicacion'] : null);
+
+        $errors = [];
+        if ($titulo === '' || mb_strlen($titulo) > 150) $errors['titulo'] = 'obligatorio (<=150)';
+        if ($autor === ''  || mb_strlen($autor)  > 100) $errors['autor']  = 'obligatorio (<=100)';
+        try { $isbn = (new \App\Domain\ValueObject\Isbn($isbnIn))->value(); } catch (\Throwable $e) { $errors['isbn'] = 'inválido'; $isbn=$isbnIn; }
+        if ($anio !== null) {
+            $max = (int)date('Y') + 3;
+            if ($anio > $max) $errors['anio_publicacion'] = "debe ser <= {$max}";
+        }
+        if ($errors) { \App\Infrastructure\Http\Response::json(null, [], [['code'=>'VALIDATION_ERROR','message'=>'Errores de validación','details'=>$errors]], 400); return; }
+
+        // Re-enriquecimiento opcional (si faltan datos actuales o si quieres forzarlo cuando cambie ISBN/título/autor)
+        $descripcion = $exists['descripcion'];
+        $portadaUrl  = $exists['portada_url'];
+        $apiFailed   = false;
+
+        if (!$descripcion || !$portadaUrl || $isbn !== $exists['isbn'] || $titulo !== $exists['titulo'] || $autor !== $exists['autor']) {
+            try {
+                $client = new \App\Infrastructure\External\OpenLibraryClient($this->config);
+                $bk = $isbn ? $client->getByIsbn($isbn) : [];
+                if ($bk) {
+                    $descripcion = $descripcion ?: ($bk['description']['value'] ?? ($bk['description'] ?? null));
+                    if (!$portadaUrl) {
+                        if (isset($bk['cover']['large']))   $portadaUrl = $bk['cover']['large'];
+                        elseif (isset($bk['cover']['medium'])) $portadaUrl = $bk['cover']['medium'];
+                        elseif (isset($bk['cover']['small']))  $portadaUrl = $bk['cover']['small'];
+                    }
+                    if ($anio === null && isset($bk['publish_date']) && preg_match('/(\\d{4})/',$bk['publish_date'],$m)) {
+                        $anio = (int)$m[1];
+                    }
+                    if ($autor === '' && !empty($bk['authors'][0]['name'])) $autor = (string)$bk['authors'][0]['name'];
+                } else {
+                    $sr = $client->searchByTitleAuthor($titulo, $autor);
+                    if (!empty($sr['docs'][0])) {
+                        $doc = $sr['docs'][0];
+                        $descripcion ??= $doc['first_sentence'] ?? null;
+                        if (!$portadaUrl && !empty($doc['isbn'][0])) $portadaUrl = "https://covers.openlibrary.org/b/isbn/{$doc['isbn'][0]}-L.jpg";
+                        if ($anio === null && isset($doc['first_publish_year'])) $anio = (int)$doc['first_publish_year'];
+                    }
+                }
+            } catch (\Throwable $e) {
+                $apiFailed = true;
+            }
+        }
+
+        // Actualizar
+        try {
+            $ok = $this->repo->update($id, [
+                'titulo' => $titulo,
+                'autor'  => $autor,
+                'isbn'   => $isbn,
+                'anio_publicacion' => $anio,
+                'descripcion' => $descripcion,
+                'portada_url' => $portadaUrl,
+                'updated_at' => \App\Shared\Clock::now(),
+                'updated_by' => $userId ?: '00000000-0000-0000-0000-000000000001',
+            ]);
+            if (!$ok) { \App\Infrastructure\Http\Response::json(null, [], [['code'=>'NOT_FOUND','message'=>'Libro no encontrado']], 404); return; }
+        } catch (\PDOException $e) {
+            if ((int)$e->getCode() === 23000 || str_contains($e->getMessage(), 'Duplicate')) {
+                \App\Infrastructure\Http\Response::json(null, [], [['code'=>'CONFLICT','message'=>'ISBN ya existe']], 409); return;
+            }
+            throw $e;
+        }
+
+        $meta = [];
+        if ($apiFailed) $meta['external_status'] = 503;
+
+        \App\Infrastructure\Http\Response::json([
+            'id' => $id,
+            'titulo' => $titulo,
+            'autor' => $autor,
+            'isbn' => $isbn,
+            'anio_publicacion' => $anio,
+            'descripcion' => $descripcion,
+            'portada_url' => $portadaUrl,
+        ], $meta, null, 200);
+    }
+
+    public function destroy(\App\Infrastructure\Http\Request $req): void
+    {
+        $userId = $_SERVER['AUTH_USER_ID'] ?? '00000000-0000-0000-0000-000000000001';
+        $id     = $this->extractIdFromPath($req->path());
+        if (!$id) { \App\Infrastructure\Http\Response::json(null, [], [['code'=>'BAD_REQUEST','message'=>'Missing id']], 400); return; }
+
+        $mode = strtolower($this->config->get('DELETE_MODE', 'soft') ?? 'soft');
+
+        $ok = false;
+        if ($mode === 'hard') {
+            $ok = $this->repo->hardDelete($id);
+        } else {
+            $ok = $this->repo->softDelete($id, \App\Shared\Clock::now(), $userId);
+        }
+
+        if (!$ok) {
+            \App\Infrastructure\Http\Response::json(null, [], [['code'=>'NOT_FOUND','message'=>'Libro no encontrado']], 404);
+            return;
+        }
+
+        http_response_code(204);
+    }
+
+
+    private function extractIdFromPath(string $path): ?string
+    {
+        // Espera '/api/v1/libros/{uuid}'
+        $parts = explode('/', trim($path, '/'));
+        $idx = array_search('libros', $parts, true);
+        if ($idx !== false && isset($parts[$idx+1])) return $parts[$idx+1];
+        return null;
+    }
+
 }
