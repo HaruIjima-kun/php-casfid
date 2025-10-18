@@ -1,49 +1,52 @@
 <?php
 declare(strict_types=1);
 
-
 use App\Infrastructure\Config\Config;
 use App\Infrastructure\Http\{Request, Response, Router};
-use App\Infrastructure\Http\Middlewares\RequestIdMiddleware;
-use App\Interfaces\Http\Controllers\AuthController;
-use App\Interfaces\Http\Controllers\BookController;
-use App\Interfaces\Http\Controllers\HealthController;
-
+use App\Infrastructure\Http\Middlewares\{RequestIdMiddleware, RateLimitMiddleware, AuthMiddleware};
+use App\Interfaces\Http\Controllers\{HealthController, AuthController, BookController};
 
 require __DIR__ . '/../vendor/autoload.php';
 
-$config = new Config(__DIR__ . '/../.env');
-
-$router = new Router();
-
-// Autenticación
-$auth = new AuthController($config);
-$router->post('/auth/login', [$auth, 'login']);
-
-// Gestión de libros
-$books = new BookController($config);
-$router->get('/api/v1/libros', [$books, 'index']);
-
-// Middleware (temporalmente invocado aquí antes del dispatch)
+/**
+ * Bootstrap de configuración
+ */
+$config  = new Config(__DIR__ . '/../.env');
 $request = Request::fromGlobals();
-$reqIdMw = new RequestIdMiddleware();
-$reqIdMw->handle($request);
+$router  = new Router();
 
-// Controlador de salud
+/**
+ * Middlewares globales
+ * - X-Request-Id (trazabilidad)
+ * - Rate limit 60 req/min por IP o token (Redis)
+ */
+(new RequestIdMiddleware())->handle($request);
+(new RateLimitMiddleware($config))->handle($request);
+
+/**
+ * Controladores
+ */
 $health = new HealthController($config);
-$router->get('/health', [$health, 'status']);
+$auth   = new AuthController($config);
+$books  = new BookController($config);
 
-// Ruta raíz (temporal)
-$router->get('/', function(Request $req) use ($config) {
-    $appName = $config->get('APP_NAME', 'BooksAPI');
-    $env     = $config->get('APP_ENV', 'local');
-    $rid     = $_SERVER['X_REQUEST_ID'] ?? null;
+/**
+ * Rutas públicas
+ */
+$router->get('/health',       [$health, 'status']);
+$router->post('/auth/login',  [$auth, 'login']);
+$router->get('/api/v1/libros',[$books, 'index']);
 
-    Response::json(
-        ['message' => "Hello from {$appName}", 'env' => $env],
-        $rid ? ['request_id' => $rid] : []
-    );
-});
+/**
+ * Ejemplo de ruta protegida (cuando implementemos el método):
+ * $router->post('/api/v1/libros', function(Request $req) use ($config, $books) {
+ *     (new AuthMiddleware($config))->requireAuth($req, ['admin','usuario']);
+ *     $books->store($req);
+ * });
+ */
 
-// Dispatch
+/**
+ * Dispatch
+ */
 $router->dispatch($request);
+
