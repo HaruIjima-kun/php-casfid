@@ -2,112 +2,72 @@
 declare(strict_types=1);
 
 use App\Infrastructure\Config\Config;
-use App\Infrastructure\Http\{Request, Response, Router};
-use App\Infrastructure\Http\Middlewares\{RequestIdMiddleware, RateLimitMiddleware, AuthMiddleware};
+use App\Infrastructure\Http\Request;
+use App\Infrastructure\Http\Response;
+use App\Infrastructure\Http\Router;
 use App\Infrastructure\Logging\Logger;
-use App\Infrastructure\Http\Middlewares\ErrorHandler;
-use App\Interfaces\Http\Controllers\{HealthController, AuthController, BookController};
+use App\Infrastructure\Http\Middlewares\RequestIdMiddleware;
+use App\Infrastructure\Http\Middlewares\AuthMiddleware;
+use App\Infrastructure\Http\Middlewares\RateLimitMiddleware;
+use App\Infrastructure\Http\Middlewares\RateLimitRedisMiddleware;
+use App\Infrastructure\Cache\RedisClientFactory;
+use App\Infrastructure\Cache\RedisCache;
+use App\Interfaces\Http\Controllers\BookController;
+use App\Interfaces\Http\Controllers\AuthController;
 
 require __DIR__ . '/../vendor/autoload.php';
 
-/**
- * Bootstrap de configuración
- */
-$config  = new Config(__DIR__ . '/../.env');
-$request = Request::fromGlobals();
-$router  = new Router();
-
-// Logger + Error handler global
+$config = new Config();
+$router = new Router();
 $logger = new Logger($config);
-(new ErrorHandler($logger, $config))->register();
 
-/**
- * Middlewares globales
- * - X-Request-Id (trazabilidad)
- * - Rate limit 60 req/min por IP o token (Redis)
- */
-(new RequestIdMiddleware())->handle($request);
-(new RateLimitMiddleware($config))->handle($request);
+// Redis setup
+$redis = RedisClientFactory::make($config);
+$cache = $redis ? new RedisCache($redis) : null;
 
-/**
- * Controladores
- */
-$health = new HealthController($config);
-$auth   = new AuthController($config);
-$books  = new BookController($config);
+// --- Middlewares globales ---
+// Rate limiting
+if ($redis !== null) {
+    $router->middleware(new RateLimitRedisMiddleware($config, $redis));
+} else {
+    $router->middleware(new RateLimitMiddleware($config));
+}
 
-/**
- * Rutas públicas
- */
-$router->get('/health',       [$health, 'status']);
-$router->post('/auth/login',  [$auth, 'login']);
-$router->get('/api/v1/libros',[$books, 'index']);
-$router->post('/api/v1/libros', function(Request $req) use ($config, $books) {
-    (new AuthMiddleware($config))->requireAuth($req, ['admin','usuario']);
-    $books->store($req);
-});
-$router->get('/api/v1/libros/{id}', function(\App\Infrastructure\Http\Request $req) use ($books) {
-    // Reutilizamos findById
-    $params = $_SERVER['ROUTE_PARAMS'] ?? [];
-    $id = $params['id'] ?? null;
-    if (!$id) { \App\Infrastructure\Http\Response::json(null, [], [['code'=>'BAD_REQUEST','message'=>'Missing id']], 400); return; }
-    $row = (new \App\Infrastructure\Persistence\PdoConnection(new \App\Infrastructure\Config\Config(__DIR__ . '/../.env')))->pdo()
-        ->prepare("SELECT * FROM libros WHERE id = :id");
-    $pdo = (new \App\Infrastructure\Persistence\PdoConnection(new \App\Infrastructure\Config\Config(__DIR__ . '/../.env')))->pdo();
-    $stmt = $pdo->prepare("SELECT * FROM libros WHERE id = :id AND deleted_at IS NULL");
-    $stmt->bindValue(':id', $id);
-    $stmt->execute();
-    $row = $stmt->fetch(\PDO::FETCH_ASSOC);
-    if (!$row) { \App\Infrastructure\Http\Response::json(null, [], [['code'=>'NOT_FOUND','message'=>'Libro no encontrado']], 404); return; }
-    \App\Infrastructure\Http\Response::json($row);
+// Request ID tracking
+$router->middleware(new RequestIdMiddleware());
+
+// --- Rutas públicas ---
+$router->get('/', function (Request $req) use ($config) {
+    Response::json(['message' => 'Hello from BooksAPI', 'env' => $config->get('APP_ENV', 'local')]);
 });
 
-
-/**
- * Búsquedas
- */
-// Buscar por título
-$router->get('/api/v1/libros/buscar/titulo', function(Request $req) use ($books) {
-    // Reutilizamos index con query 'titulo'
-    $_GET['titulo'] = $req->queryParam('q','');
-    $books->index($req);
+$router->get('/health', function (Request $req) {
+    Response::json([
+        'ok' => true,
+        'name' => 'BooksAPI',
+        'time' => (new DateTimeImmutable())->format(DATE_ATOM),
+    ]);
 });
 
-// Buscar por autor
-$router->get('/api/v1/libros/buscar/autor', function(Request $req) use ($books) {
-    $_GET['autor'] = $req->queryParam('q','');
-    $books->index($req);
-});
+// --- Auth ---
+$authController = new AuthController($config);
+$router->post('/auth/login', fn(Request $req) => $authController->login($req));
 
+// --- Books ---
+$bookController = new BookController($config);
+$router->get('/api/v1/libros', fn(Request $req) => $bookController->index($req));
+$router->get('/api/v1/libros/{id}', fn(Request $req) => $bookController->show($req));
+$router->post('/api/v1/libros', fn(Request $req) => $bookController->store($req));
+$router->put('/api/v1/libros/{id}', fn(Request $req) => $bookController->update($req));
+$router->delete('/api/v1/libros/{id}', fn(Request $req) => $bookController->destroy($req));
 
-
-/**
- * Rutas protegidas
- */
-// PUT /api/v1/libros/{id}
-$router->put('/api/v1/libros/{id}', function(\App\Infrastructure\Http\Request $req) use ($config, $books) {
-    (new \App\Infrastructure\Http\Middlewares\AuthMiddleware($config))->requireAuth($req, ['admin','usuario']);
-    $books->update($req);
-});
-
-// DELETE /api/v1/libros/{id}
-$router->delete('/api/v1/libros/{id}', function(\App\Infrastructure\Http\Request $req) use ($config, $books) {
-    (new \App\Infrastructure\Http\Middlewares\AuthMiddleware($config))->requireAuth($req, ['admin','usuario']);
-    $books->destroy($req);
-});
-
-
-
-/**
- * Ejemplo de ruta protegida (cuando implementemos el método):
- * $router->post('/api/v1/libros', function(Request $req) use ($config, $books) {
- *     (new AuthMiddleware($config))->requireAuth($req, ['admin','usuario']);
- *     $books->store($req);
- * });
- */
-
-/**
- * Dispatch
- */
-$router->dispatch($request);
-
+// --- Manejo de errores ---
+try {
+    $router->dispatch(Request::capture());
+} catch (Throwable $e) {
+    $logger->error($e->getMessage(), ['trace' => $e->getTraceAsString()]);
+    Response::json(null, [], [[
+        'code' => 'INTERNAL_ERROR',
+        'message' => $e->getMessage(),
+    ]], 500);
+}
