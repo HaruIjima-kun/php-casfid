@@ -4,6 +4,7 @@ composer.phar
 vendor/
 composer.lock
 .phpstan/
+.phpunit.cache/
 storage/
 public/storage/covers/*
 public/storage/logs/*
