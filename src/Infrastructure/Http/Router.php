@@ -3,21 +3,23 @@ declare(strict_types=1);
 
 namespace App\Infrastructure\Http;
 
+use App\Infrastructure\Http\Middlewares\Middleware;
+
 final class Router
 {
     /**
-     * @var array<string, array<int, array{pattern:string,vars:string[],handler:callable}>>
+     * @var array<string, array<int, array{pattern:string,vars:array<int,string>,handler:callable}>>
      */
     private array $routes = [
-        'GET' => [],
-        'POST' => [],
-        'PUT' => [],
+        'GET'    => [],
+        'POST'   => [],
+        'PUT'    => [],
         'DELETE' => [],
-        'PATCH' => [],
+        'PATCH'  => [],
     ];
 
     /**
-     * @var array<int, object> Middlewares que implementan handle(Request $req, callable $next): void
+     * @var array<int, Middleware>
      */
     private array $middlewares = [];
 
@@ -47,10 +49,9 @@ final class Router
     }
 
     /**
-     * Registra un middleware.
-     * El objeto debe exponer: handle(Request $req, callable $next): void
+     * Registra un middleware (debe implementar Middleware::handle()).
      */
-    public function middleware(object $mw): void
+    public function middleware(Middleware $mw): void
     {
         $this->middlewares[] = $mw;
     }
@@ -61,7 +62,7 @@ final class Router
     public function dispatch(Request $request): void
     {
         $method = strtoupper($request->method());
-        $path = $request->path();
+        $path   = $request->path();
 
         // Match de ruta
         [$handler, $vars] = $this->match($method, $path);
@@ -85,24 +86,23 @@ final class Router
             return;
         }
 
-        // Exponemos variables de ruta a los handlers existentes
+        // Exponer variables de ruta
         $_SERVER['ROUTE_PARAMS'] = $vars;
 
-        // Construimos la pipeline: middlewares + handler final
+        // Construir pipeline: middlewares + handler final
         $pipeline = array_reduce(
             array_reverse($this->middlewares),
             /**
              * @param callable(Request): void $next
              * @return callable(Request): void
              */
-            function (callable $next, object $mw): callable {
+            function (callable $next, Middleware $mw): callable {
                 return function (Request $r) use ($mw, $next): void {
-                    // Invoca $mw->handle($r, $next)
                     $mw->handle($r, $next);
                 };
             },
             /**
-             * Handler final de la ruta
+             * Handler final
              * @return callable(Request): void
              */
             function (Request $r) use ($handler): void {
@@ -110,7 +110,6 @@ final class Router
             }
         );
 
-        // Ejecutamos la pipeline
         $pipeline($request);
     }
 
@@ -137,7 +136,7 @@ final class Router
                 $vars = [];
                 foreach ($r['vars'] as $name) {
                     if (isset($m[$name])) {
-                        $vars[$name] = $m[$name];
+                        $vars[$name] = (string)$m[$name];
                     }
                 }
                 return [$r['handler'], $vars];
@@ -174,11 +173,12 @@ final class Router
 
         // Extrae nombres {var}
         preg_match_all('/\{([a-zA-Z_][a-zA-Z0-9_]*)\}/', $path, $m);
-        $vars = $m[1] ?? [];
+        /** @var array<int,string> $vars */
+        $vars = (isset($m[1]) && is_array($m[1])) ? $m[1] : [];
 
         $this->routes[$method][] = [
             'pattern' => $path,
-            'vars' => $vars,
+            'vars'    => $vars,
             'handler' => $handler,
         ];
     }
@@ -186,18 +186,19 @@ final class Router
     /**
      * Convierte /api/v1/libros/{id} en regex con grupos con nombre.
      * @param string $pattern
-     * @param string[] $vars
+     * @param array<int,string> $vars
      */
     private function toRegex(string $pattern, array $vars): string
     {
-        // Escapa slashes
+        // Escapa slashes y caracteres especiales
         $regex = preg_quote($pattern, '#');
 
         // Reemplaza los {var} escapados por grupos con nombre
         foreach ($vars as $v) {
+            $escaped = preg_quote($v, '#');
             // Sustituimos \{v\} por (?P<v>[^/]+)
             $regex = preg_replace(
-                '#\\\\\{' . preg_quote($v, '#') . '\\\\\}#',
+                '#\\\\\{' . $escaped . '\\\\\}#',
                 '(?P<' . $v . '>[^/]+)',
                 (string)$regex,
                 1
