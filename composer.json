@@ -6,18 +6,33 @@
     "guzzlehttp/guzzle": "^7.9"
   },
   "require-dev": {
-    "phpunit/phpunit": "^11.0",
+    "phpunit/phpunit": "^11",
     "phpstan/phpstan": "^1.11",
-    "friendsofphp/php-cs-fixer": "^3.58"
+    "friendsofphp/php-cs-fixer": "^3.64"
+  },
+  "scripts": {
+    "test": [
+      "@php -d assert.exception=1 vendor/bin/phpunit -c phpunit.xml --colors=always --testdox --display-errors --display-warnings --display-deprecations"
+    ],
+    "test:unit": [
+      "@php -d assert.exception=1 vendor/bin/phpunit -c phpunit.xml --testsuite Unit --colors=always"
+    ],
+    "test:integration": [
+      "@php -d assert.exception=1 vendor/bin/phpunit -c phpunit.xml --testsuite Integration --colors=always"
+    ],
+    "stan": [
+      "vendor/bin/phpstan analyse --memory-limit=512M"
+    ],
+    "fix": [
+      "PHP_CS_FIXER_IGNORE_ENV=1 vendor/bin/php-cs-fixer fix --ansi"
+    ],
+    "lint": [
+      "PHP_CS_FIXER_IGNORE_ENV=1 vendor/bin/php-cs-fixer fix --dry-run --diff --ansi"
+    ]
   },
   "autoload": {
     "psr-4": {
       "App\\": "src/"
     }
-  },
-  "scripts": {
-    "test": "phpunit -c tests/phpunit.xml",
-    "stan": "phpstan analyse src --level=max",
-    "fix": "php-cs-fixer fix --using-cache=yes"
   }
 }
