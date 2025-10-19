@@ -21,6 +21,7 @@ final class Book
         private ?string $deletedBy,
     ) {}
 
+    /** @return array<string, mixed> */
     public function toArray(): array
     {
         return [

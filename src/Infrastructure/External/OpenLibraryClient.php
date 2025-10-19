@@ -42,6 +42,7 @@ final class OpenLibraryClient
         if ($count > $this->rps) usleep(200_000); // 0.2s backoff simple
     }
 
+    /** @return array<string, mixed> */
     public function getByIsbn(string $isbn): array
     {
         $key = 'ol:isbn:' . $isbn;
@@ -61,6 +62,7 @@ final class OpenLibraryClient
         });
     }
 
+    /** @return array<string, mixed> */
     public function searchByTitleAuthor(string $title = '', string $author = ''): array
     {
         $key = 'ol:search:' . md5($title . '|' . $author);

@@ -5,6 +5,10 @@ namespace App\Infrastructure\Http;
 
 final class Response
 {
+    /**
+     * @param array<string, mixed> $meta
+     * @param array<int, array{code:string, message:string, details?:array<string,mixed>, trace?:string[]}>|null $errors
+     */
     public static function json(mixed $data = null, array $meta = [], ?array $errors = null, int $status = 200): void
     {
         http_response_code($status);

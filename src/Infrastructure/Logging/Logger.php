@@ -23,21 +23,25 @@ final class Logger
         }
     }
 
+    /** @param array<string, mixed> $ctx */
     public function info(string $msg, array $ctx = []): void
     {
         $this->log('INFO', $msg, $ctx);
     }
 
+    /** @param array<string, mixed> $ctx */
     public function warning(string $msg, array $ctx = []): void
     {
         $this->log('WARN', $msg, $ctx);
     }
 
+    /** @param array<string, mixed> $ctx */
     public function error(string $msg, array $ctx = []): void
     {
         $this->log('ERROR', $msg, $ctx);
     }
 
+    /** @param array<string, mixed> $ctx */
     public function log(string $level, string $msg, array $ctx = []): void
     {
         $rid = $_SERVER['X_REQUEST_ID'] ?? null;
