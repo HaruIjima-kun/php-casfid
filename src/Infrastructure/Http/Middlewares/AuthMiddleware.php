@@ -16,9 +16,10 @@ final class AuthMiddleware
      * Valida JWT del header Authorization.
      * Si $roles no es null, exige que el claim 'role' esté dentro de $roles.
      */
-    public function requireAuth(Request $req, ?array $roles = null): void
+    /** @param string[] $roles */
+    public function requireAuth(Request $req, array $roles = ['usuario','admin']): void
     {
-        $auth = $req->header('Authorization');
+        $auth = $req->header('Authorization', '');
         if (!$auth || stripos($auth, 'Bearer ') !== 0) {
             Response::json(null, [], [
                 ['code' => 'UNAUTHORIZED', 'message' => 'Missing Bearer token']
