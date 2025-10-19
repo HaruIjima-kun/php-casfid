@@ -1,14 +1,9 @@
-# Ignore all files in the .idea folder
 .idea/
-
-# Ignore environment configuration file
 .env
-
-# Ignore Composer's vendor directory and lock file
 composer.phar
 vendor/
 composer.lock
-
-
+.phpstan/
+storage/
 public/storage/covers/*
 public/storage/logs/*
