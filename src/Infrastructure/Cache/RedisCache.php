@@ -5,17 +5,28 @@ namespace App\Infrastructure\Cache;
 
 use Redis;
 
-final class RedisCache
+final class RedisCache implements CacheInterface
 {
     public function __construct(private Redis $redis) {}
 
-    public function remember(string $key, int $ttlSeconds, callable $callback): mixed
+    public function get(string $key): mixed
     {
-        $hit = $this->redis->get($key);
-        if ($hit !== false) return json_decode($hit, true);
+        $raw = $this->redis->get($key);
+        if ($raw === false || $raw === null) {
+            return null;
+        }
+        $val = json_decode((string)$raw, true);
+        return $val === null && $raw !== 'null' ? null : $val;
+    }
 
-        $value = $callback();
-        $this->redis->setex($key, $ttlSeconds, json_encode($value));
-        return $value;
+    public function set(string $key, mixed $value, int $ttlSeconds): void
+    {
+        $payload = json_encode($value, JSON_THROW_ON_ERROR);
+        $this->redis->setex($key, $ttlSeconds, $payload);
+    }
+
+    public function delete(string $key): void
+    {
+        $this->redis->del($key);
     }
 }
