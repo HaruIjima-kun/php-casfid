@@ -1,223 +1,242 @@
-# 📚 BooksAPI (PHP 8.3 + MySQL + Redis + Nginx)
+# BooksAPI (PHP 8.3, MySQL, Redis, Docker)
 
-API CRUD de libros con enriquecimiento desde Open Library, autenticación JWT, rate limiting, logs y Docker.
-
----
-
-## 🚀 Requisitos
-
-- Docker Desktop (WSL2 recomendado)
-- PowerShell (Windows) o bash
-- Composer (ya incluido en el contenedor)
+Pequeña API para **gestión de libros** con CRUD, búsqueda, caché de respuestas en Redis, rate limiting, autenticación JWT y **descarga local de portadas** desde OpenLibrary. Incluye **OpenAPI (Swagger)**, tests con PHPUnit y análisis estático con PHPStan.
 
 ---
 
-## ⚙️ Puesta en marcha
+## 🧱 Stack
 
+- **PHP 8.3 (FPM)** + **Nginx**
+- **MySQL 8** (datos)
+- **Redis** (rate limit + caché)
+- **PHPUnit** (tests)
+- **PHPStan** (análisis estático)
+- **Guzzle** (HTTP client)
+- **OpenAPI** (docs en `docs/openapi.yaml`)
+- **Docker Compose** para orquestación
+
+---
+
+## 🚀 Puesta en marcha
+
+1. Copia `.env.example` a `.env` y revisa valores.
+2. Levanta los servicios:
+
+```bash
 docker compose up -d --build
 docker compose exec app composer install
 docker compose exec app php -v
+```
 
-Copia .env.example → .env y ajusta (JWT_SECRET, DB creds, etc.).
+3. *Healthcheck*:
+
+```bash
+curl -i http://localhost:8080/health
+```
+
+Debe devolver `200 OK` y un JSON con `ok: true`.
+
+> Si usas PowerShell, sustituye `curl` por `Invoke-RestMethod` donde prefieras.
 
 ---
 
-## 🩺 Healthcheck
+## 🗄️ Migraciones y seed
 
-GET http://localhost:8080/health
+### Migración base (tabla `libros`)
+```bash
+Get-Content src/Infrastructure/Persistence/Migrations/2025_10_17_000001_create_libros.sql | docker compose exec -T mysql mysql -uroot -proot books
+```
 
-Devuelve:
-{
-"data": {
-"ok": true,
-"name": "BooksAPI",
-"time": "2025-10-18T12:00:00+00:00"
-},
-"meta": {
-"request_id": "..."
-},
-"errors": null
-}
+### Migración portada local (`portada_path`)
+```bash
+Get-Content src/Infrastructure/Persistence/Migrations/2025_10_19_000002_add_portada_path.sql | docker compose exec -T mysql mysql -uroot -proot books
+```
+
+> Verifica columnas:
+```bash
+docker compose exec -T mysql mysql -uroot -proot -e "USE books; SHOW COLUMNS FROM libros;"
+```
 
 ---
 
 ## 🔐 Autenticación
 
-POST /auth/login
-{ "username": "admin", "password": "admin123" }
+Login (usuario demo `admin/admin123`):
 
-Devuelve un JWT válido durante 1 hora.
+```bash
+TOKEN=$(curl -s -X POST http://localhost:8080/auth/login \
+  -H "Content-Type: application/json" \
+  -d '{"username":"admin","password":"admin123"}' | jq -r '.data.access_token')
+echo $TOKEN
+```
 
----
+PowerShell:
+```powershell
+$auth = Invoke-RestMethod -Uri "http://localhost:8080/auth/login" -Method Post -ContentType "application/json" -Body '{"username":"admin","password":"admin123"}'
+$TOKEN = $auth.data.access_token
+$TOKEN
+```
 
-## 📘 Endpoints principales
-
-### Listar libros
-GET /api/v1/libros?q=...&titulo=...&autor=...&page=1&per_page=20&sort=titulo&direction=asc
-
-### Crear libro (requiere JWT)
-POST /api/v1/libros
-Authorization: Bearer <token>
-{
-"titulo": "El prisma negro",
-"autor": "Brent Weeks",
-"isbn": "9788490322383"
-}
-
-### Actualizar libro
-PUT /api/v1/libros/{id}
-Authorization: Bearer <token>
-{
-"titulo": "El prisma negro (edición revisada)"
-}
-
-### Borrar libro
-DELETE /api/v1/libros/{id}
-Authorization: Bearer <token>
-
-(El borrado será soft o hard según DELETE_MODE en .env.)
-
-### Búsqueda específicas
-GET /api/v1/libros/buscar/titulo?q=...
-GET /api/v1/libros/buscar/autor?q=...
+Incluye el header: `Authorization: Bearer <token>`
 
 ---
 
-## 🧩 Formato estándar de respuesta
+## 📚 Endpoints principales
 
-{
-"data": { ... },
-"meta": { "request_id": "..." },
-"errors": null
-}
+- `GET /api/v1/libros` — listado + búsqueda (`q`, `titulo`, `autor`, `sort`, `direction`, `page`, `per_page`)
+- `GET /api/v1/libros/{id}` — detalle
+- `POST /api/v1/libros` — crear (requiere `titulo`, `autor`, `isbn` válidos)
+- `PUT /api/v1/libros/{id}` — actualizar (param opcional `refresh_cover=1` fuerza re-descarga de portada)
+- `DELETE /api/v1/libros/{id}` — eliminar (soft/hard según `DELETE_MODE`)
 
-Errores:
-{
-"data": null,
-"meta": { "request_id": "..." },
-"errors": [
-{ "code": "VALIDATION_ERROR", "message": "Errores de validación", "details": { "isbn": "inválido" } }
-]
-}
+**Formato de respuesta estándar**: `{ "data": ..., "meta": ..., "errors": ... }`
 
 ---
 
-## 🪵 Logs
+## 🧠 Enriquecimiento externo + portadas locales
 
-- Archivo: storage/logs/app.log
-- También se envían a stdout (visible con docker compose logs app) si LOG_STDOUT=true.
+- Al crear/editar, se consulta **OpenLibrary** (con **caché en Redis**).
+- Se guarda `portada_url` (remota) y si `STORE_COVERS=true`, se descarga la imagen a **`/storage/covers`** y se expone **`portada_path`** (vía Nginx `/storage/...`).
 
-Niveles:
-- info → CRUD y operaciones normales
-- warning → API externa parcial o fallida
-- error → Excepciones o fallos graves
-
----
-
-## 🚦 Rate Limiting
-
-- 60 req/min por IP o token (CLIENT_RATE_LIMIT_PER_MINUTE)
-- Usa Redis (REDIS_HOST, REDIS_PORT, etc.)
-- Si se excede el límite: 429 Too Many Requests
+Forzar refresco de portada en un update:
+```bash
+curl -X PUT "http://localhost:8080/api/v1/libros/<ID>?refresh_cover=1" \
+  -H "Authorization: Bearer $TOKEN" \
+  -H "Content-Type: application/json" \
+  -d '{"titulo":"Nuevo título"}'
+```
 
 ---
 
-## 🧠 Caching
+## 🧰 Configuración relevante (`.env.example`)
 
-- Resultados de Open Library se cachean 24h
-- Configurable con REDIS_TTL_SECONDS
+```dotenv
+APP_ENV=local
+APP_DEBUG=true
+PAGINATION_PER_PAGE=20
+DELETE_MODE=soft
+
+# MySQL
+DB_HOST=mysql
+DB_PORT=3306
+DB_DATABASE=books
+DB_USERNAME=root
+DB_PASSWORD=root
+DB_TIMEZONE=Europe/Madrid
+
+# Redis
+REDIS_HOST=redis
+REDIS_PORT=6379
+RATE_LIMIT_MAX=60
+RATE_LIMIT_WINDOW=60
+CACHE_ENABLED=true
+API_CACHE_TTL_SECONDS=30
+
+# Portadas locales
+STORE_COVERS=true
+COVER_STORAGE_PATH=/var/www/html/storage/covers
+COVER_BASE_URL=/storage/covers
+COVER_TIMEOUT=10
+
+# JWT
+JWT_SECRET=devsecret
+JWT_ISSUER=BooksAPI
+JWT_TTL=3600
+JWT_REFRESH_TTL=1209600
+```
 
 ---
 
-## 🧾 Documentación OpenAPI
+## 🧪 Tests & Lint
 
-- Archivo: docs/openapi.yaml
-- Compatible con Swagger UI, Redoc, o VSCode Rest Client
+### PHPUnit
+```bash
+docker compose exec app composer test
+# o:
+docker compose exec app ./vendor/bin/phpunit --display-deprecations --testdox
+```
+
+### PHPStan
+```bash
+docker compose exec app composer stan
+# o:
+docker compose exec app ./vendor/bin/phpstan analyse --memory-limit=512M
+```
+
+### (Opcional) PHP-CS-Fixer
+```bash
+docker compose exec app composer fix
+```
 
 ---
 
-## 🧪 Tests
+## 🧵 Caché de respuestas & Rate limiting
 
-Instalar PHPUnit (si no está):
-docker compose exec app composer require --dev phpunit/phpunit:^11
-
-Ejecutar todos los tests:
-docker compose exec app ./vendor/bin/phpunit
-
-Cobertura objetivo: ≥85%
-
-Tests incluidos:
-- Unitarios: IsbnTest, JwtTest
-- Integración: BookRepositoryTest (SQLite en memoria)
+- **Response Cache**: middleware con Redis para **GET** (cabecera `X-Cache: HIT/MISS`).
+- **Invalidación**: tras POST/PUT/DELETE se invalidan claves relevantes.
+- **Rate Limit**: límites por IP/token con cabeceras `X-RateLimit-*` y `429` si se excede.
 
 ---
 
-## 🐳 Docker
+## 🧾 OpenAPI / Swagger
 
-Servicios:
+El contrato está en: **`docs/openapi.yaml`** (actualizado).
 
-| Servicio | Descripción |
-|-----------|--------------|
-| app | PHP 8.3 (FPM + Composer + extensiones Redis, PDO, JSON) |
-| nginx | Servidor HTTP reverse proxy |
-| mysql | Base de datos MySQL 8.0 |
-| redis | Cache / Rate limiting |
+### 🔎 Swagger UI (docker standalone)
 
-Volúmenes:
-- ./storage/logs → /var/www/html/storage/logs
+Usa el archivo `docker-compose.swagger.yml` incluido. Arranca Swagger UI en `http://localhost:8081`:
+
+```bash
+docker compose -f docker-compose.swagger.yml up -d swagger
+# Abrir en el navegador:
+# http://localhost:8081
+```
+
+---
+
+## 📂 Estructura de proyecto
+
+```
+/public            # index.php (front controller)
+/src
+  /Domain
+  /Application
+  /Interfaces      # Controllers HTTP
+  /Infrastructure  # DB, HTTP, Cache, Middlewares, etc.
+    /Persistence/Migrations
+    /Services
+    /Storage
+/tests             # unit e integración
+/docs              # openapi.yaml
+/docker            # nginx conf, etc.
+/storage           # covers (sirviendo por Nginx /storage)
+```
+
+---
+
+## 🧹 Git & Commits
+
+- Flujo: `feature/*` → PR → `develop` → `main` (releases).
+- Convencional commits (sugerido):
+  - `feat: ...`, `fix: ...`, `test: ...`, `docs: ...`, `chore: ...`, `refactor: ...`, `db: ...`, `ops: ...`
 
 ---
 
 ## 🛡️ Seguridad
 
-- JWT en cabecera Authorization: Bearer
-- Consultas preparadas (PDO)
-- Cabeceras seguras:
-  X-Frame-Options: DENY
-  X-Content-Type-Options: nosniff
-  X-XSS-Protection: 1; mode=block
-  Content-Security-Policy: default-src 'self';
+- JWT en header `Authorization` (stateless).
+- SQL seguro mediante **consultas preparadas**.
+- Cabeceras de seguridad habilitadas (CSP, X-Frame-Options, X-Content-Type-Options, X-XSS-Protection).
 
 ---
 
-## 📦 Variables de entorno
+## 🧭 Troubleshooting rápido
 
-Archivo .env.example:
-
-APP_ENV=local
-APP_DEBUG=true
-APP_NAME=BooksAPI
-
-DB_HOST=mysql
-DB_PORT=3306
-DB_NAME=books
-DB_USER=root
-DB_PASS=root
-
-JWT_SECRET=changeme
-JWT_EXPIRE_SECONDS=3600
-JWT_REFRESH_TTL=86400
-
-REDIS_HOST=redis
-REDIS_PORT=6379
-REDIS_TTL_SECONDS=86400
-CLIENT_RATE_LIMIT_PER_MINUTE=60
-
-DELETE_MODE=soft
-LOG_STDOUT=true
-PAGINATION_PER_PAGE=20
-TIMEZONE=Europe/Madrid
-
----
-
-## 🧰 Comandos útiles
-
-docker compose logs -f app
-curl http://localhost:8080/health
-docker compose exec app ./vendor/bin/phpunit
-
----
-
-## 📄 Licencia
-
-MIT — creado como ejemplo educativo de buenas prácticas en PHP 8.3, DDD liviano y SOLID.
+- **Router**: asegúrate de tener `Router::middleware()` y `Request::capture()`.
+- **Nginx**: recuerda el alias `/storage/` en `docker/nginx/nginx.conf` y reiniciar:
+  ```bash
+  docker compose restart nginx
+  ```
+- **Redis** no disponible → se usan fallbacks (sin cache/ratelimit reales).
+- **Permisos**: si no puedes escribir en `storage/covers`, revisa permisos del contenedor.
+- **Windows**: usa rutas y comillas adecuadas en PowerShell (usa *backticks* para multilínea).

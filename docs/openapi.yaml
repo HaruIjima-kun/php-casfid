@@ -3,107 +3,92 @@ info:
   title: BooksAPI
   version: 1.0.0
   description: |
-    BooksAPI – CRUD de libros con enriquecimiento desde Open Library, autenticación JWT,
-    paginación, ordenación, búsqueda y rate limiting con Redis.
-    - Respuestas con la forma: `{ "data": ..., "meta": ..., "errors": ... }`
-    - Paginación por defecto: 20 elementos por página.
-    - Rate limiting: por defecto **60 req/min** (cabeceras `X-RateLimit-*`).
+    API para gestión de libros con enriquecimiento desde OpenLibrary y portadas locales.
+    - Autenticación: JWT (Bearer).
+    - Paginación por defecto: 20 por página (configurable).
+    - Caché de respuestas GET con Redis (X-Cache: HIT/MISS).
+    - Rate limiting por IP/token con Redis (X-RateLimit-*).
 servers:
   - url: http://localhost:8080
-    description: Local
+    description: Local (Docker)
 
 tags:
-  - name: Health
   - name: Auth
-  - name: Books
+  - name: Libros
+  - name: Salud
 
 paths:
   /:
     get:
-      tags: [Health]
-      summary: Hello
-      operationId: hello
+      tags: [Salud]
+      summary: Ping API
+      operationId: ping
       responses:
         '200':
-          description: Hello response
+          description: OK
           headers:
-            X-RateLimit-Limit:
-              $ref: '#/components/headers/X-RateLimit-Limit'
-            X-RateLimit-Remaining:
-              $ref: '#/components/headers/X-RateLimit-Remaining'
-            X-RateLimit-Reset:
-              $ref: '#/components/headers/X-RateLimit-Reset'
+            X-Request-Id:
+              schema: { type: string }
           content:
             application/json:
-              schema:
-                $ref: '#/components/schemas/Envelope'
+              schema: { $ref: '#/components/schemas/Envelope' }
               examples:
                 ok:
                   value:
-                    data:
-                      message: "Hello from BooksAPI"
-                      env: "local"
-                    meta:
-                      request_id: "8f0f11b9fb5d1c2a"
+                    data: { message: "Hello from BooksAPI", env: "local" }
+                    meta: { request_id: "abcd1234ef" }
                     errors: null
-        '429':
-          $ref: '#/components/responses/TooManyRequests'
 
   /health:
     get:
-      tags: [Health]
-      summary: Healthcheck
+      tags: [Salud]
+      summary: Health check
       operationId: health
       responses:
         '200':
-          description: Service health
+          description: OK
           headers:
+            X-Request-Id:
+              schema: { type: string }
+            X-Cache:
+              schema: { type: string, enum: [HIT, MISS] }
             X-RateLimit-Limit:
-              $ref: '#/components/headers/X-RateLimit-Limit'
+              schema: { type: integer }
             X-RateLimit-Remaining:
-              $ref: '#/components/headers/X-RateLimit-Remaining'
+              schema: { type: integer }
             X-RateLimit-Reset:
-              $ref: '#/components/headers/X-RateLimit-Reset'
+              schema: { type: integer, description: "Unix epoch seconds to reset window" }
           content:
             application/json:
-              schema:
-                $ref: '#/components/schemas/Envelope'
+              schema: { $ref: '#/components/schemas/Envelope' }
               examples:
                 ok:
                   value:
-                    data:
-                      ok: true
-                      name: "BooksAPI"
-                      time: "2025-10-18T13:14:27+00:00"
-                    meta:
-                      request_id: "d9f8d857159029b4"
+                    data: { ok: true, name: "BooksAPI", time: "2025-10-18T13:14:27+00:00" }
+                    meta: { request_id: "d9f8d857159029b4" }
                     errors: null
-        '429':
-          $ref: '#/components/responses/TooManyRequests'
 
   /auth/login:
     post:
       tags: [Auth]
-      summary: Login (JWT)
+      summary: Login y obtención de tokens
       operationId: login
       requestBody:
         required: true
         content:
           application/json:
-            schema: { $ref: '#/components/schemas/AuthLoginRequest' }
-            examples:
-              admin:
-                value: { username: "admin", password: "admin123" }
+            schema:
+              type: object
+              required: [username, password]
+              properties:
+                username: { type: string, example: admin }
+                password: { type: string, example: admin123 }
       responses:
         '200':
-          description: JWT pair
+          description: OK
           headers:
-            X-RateLimit-Limit:
-              $ref: '#/components/headers/X-RateLimit-Limit'
-            X-RateLimit-Remaining:
-              $ref: '#/components/headers/X-RateLimit-Remaining'
-            X-RateLimit-Reset:
-              $ref: '#/components/headers/X-RateLimit-Reset'
+            X-Request-Id:
+              schema: { type: string }
           content:
             application/json:
               schema: { $ref: '#/components/schemas/Envelope' }
@@ -111,59 +96,91 @@ paths:
                 ok:
                   value:
                     data:
-                      access_token: "eyJ0eXAiOiJKV1QiLCJhbGciOiJIUzI1NiJ9..."
+                      access_token: "eyJ0eXAiOiJKV1QiL..."
                       token_type: "Bearer"
                       expires_in: 3600
-                      refresh_token: "82e4a2902a7f6b325..."
+                      refresh_token: "82e4a2902a7f6b3..."
                       user:
                         id: "00000000-0000-0000-0000-000000000001"
                         name: "admin"
                         role: "admin"
-                    meta:
-                      request_id: "b6946aa337de21b5"
+                    meta: { request_id: "b6946aa337de21b5" }
                     errors: null
         '401':
-          $ref: '#/components/responses/Unauthorized'
-        '429':
-          $ref: '#/components/responses/TooManyRequests'
-
-  /api/v1/libros:
-    get:
-      tags: [Books]
-      summary: List books (search + pagination + sort)
-      operationId: listBooks
-      parameters:
-        - $ref: '#/components/parameters/q'
-        - $ref: '#/components/parameters/titulo'
-        - $ref: '#/components/parameters/autor'
-        - $ref: '#/components/parameters/sort'
-        - $ref: '#/components/parameters/direction'
-        - $ref: '#/components/parameters/page'
-        - $ref: '#/components/parameters/per_page'
-      responses:
-        '200':
-          description: Paginated books
-          headers:
-            X-RateLimit-Limit:
-              $ref: '#/components/headers/X-RateLimit-Limit'
-            X-RateLimit-Remaining:
-              $ref: '#/components/headers/X-RateLimit-Remaining'
-            X-RateLimit-Reset:
-              $ref: '#/components/headers/X-RateLimit-Reset'
+          description: Credenciales inválidas
           content:
             application/json:
               schema: { $ref: '#/components/schemas/Envelope' }
               examples:
+                invalid:
+                  value:
+                    data: null
+                    meta: {}
+                    errors:
+                      - code: UNAUTHORIZED
+                        message: Invalid credentials
+
+  /api/v1/libros:
+    get:
+      security: [{ bearerAuth: [] }]
+      tags: [Libros]
+      summary: Listado y búsqueda de libros
+      operationId: listBooks
+      parameters:
+        - in: query
+          name: q
+          schema: { type: string }
+          description: Búsqueda por título o autor (normalizada, sin acentos).
+        - in: query
+          name: titulo
+          schema: { type: string }
+          description: Búsqueda específica por título (normalizada).
+        - in: query
+          name: autor
+          schema: { type: string }
+          description: Búsqueda específica por autor (normalizada).
+        - in: query
+          name: sort
+          schema:
+            type: string
+            enum: [titulo, autor, anio_publicacion, created_at]
+            default: titulo
+        - in: query
+          name: direction
+          schema:
+            type: string
+            enum: [asc, desc]
+            default: asc
+        - in: query
+          name: page
+          schema: { type: integer, minimum: 1, default: 1 }
+        - in: query
+          name: per_page
+          schema: { type: integer, minimum: 1, maximum: 100, default: 20 }
+      responses:
+        '200':
+          description: OK
+          headers:
+            X-Request-Id: { schema: { type: string } }
+            X-Cache: { schema: { type: string, enum: [HIT, MISS] } }
+            X-RateLimit-Limit: { schema: { type: integer } }
+            X-RateLimit-Remaining: { schema: { type: integer } }
+            X-RateLimit-Reset: { schema: { type: integer } }
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/EnvelopeBooksList' }
+              examples:
                 page1:
                   value:
                     data:
-                      - id: "11111111-1111-1111-1111-111111111111"
-                        titulo: "El nombre del viento"
-                        autor: "Patrick Rothfuss"
-                        isbn: "9788401337208"
-                        anio_publicacion: 2007
-                        descripcion: "Un joven llamado Kvothe narra su vida."
-                        portada_url: "https://covers.openlibrary.org/b/isbn/9788401337208-L.jpg"
+                      - id: "33333333-3333-3333-3333-333333333333"
+                        titulo: "La comunidad del anillo"
+                        autor: "J. R. R. Tolkien"
+                        isbn: "9788445071438"
+                        anio_publicacion: 1954
+                        descripcion: "Primera parte de El Señor de los Anillos."
+                        portada_url: "https://covers.openlibrary.org/b/isbn/9788445071438-L.jpg"
+                        portada_path: "/storage/covers/9788445071438_9a8b7c6d.jpg"
                         created_at: "2025-10-18 18:24:23"
                         created_by: "00000000-0000-0000-0000-000000000001"
                         updated_at: null
@@ -178,70 +195,88 @@ paths:
                       direction: "asc"
                       request_id: "168edadda12c4480"
                     errors: null
+        '401':
+          description: No autenticado
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Envelope' }
         '429':
-          $ref: '#/components/responses/TooManyRequests'
+          description: Límite excedido
+          headers:
+            Retry-After: { schema: { type: integer } }
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Envelope' }
     post:
-      tags: [Books]
-      summary: Create book
+      security: [{ bearerAuth: [] }]
+      tags: [Libros]
+      summary: Crear un libro
       operationId: createBook
-      security:
-        - bearerAuth: []
       requestBody:
         required: true
         content:
           application/json:
-            schema: { $ref: '#/components/schemas/BookCreate' }
+            schema:
+              type: object
+              required: [titulo, autor, isbn]
             examples:
-              ok:
+              ejemplo:
                 value:
-                  titulo: "The Pragmatic Programmer"
-                  autor: "Andrew Hunt; David Thomas"
-                  isbn: "9780201616224"
-                  anio_publicacion: 1999
+                  titulo: "Clean Code"
+                  autor: "Robert C. Martin"
+                  isbn: "9780132350884"
       responses:
         '201':
-          description: Created
+          description: Creado
           headers:
-            X-RateLimit-Limit:
-              $ref: '#/components/headers/X-RateLimit-Limit'
-            X-RateLimit-Remaining:
-              $ref: '#/components/headers/X-RateLimit-Remaining'
-            X-RateLimit-Reset:
-              $ref: '#/components/headers/X-RateLimit-Reset'
+            X-Request-Id: { schema: { type: string } }
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/EnvelopeBook' }
+              examples:
+                ok:
+                  value:
+                    data:
+                      id: "832463f3-a42b-4bfe-8f4d-c1471e5b5c12"
+                      titulo: "Clean Code"
+                      autor: "Robert C. Martin"
+                      isbn: "9780132350884"
+                      anio_publicacion: 2008
+                      descripcion: null
+                      portada_url: "https://covers.openlibrary.org/b/id/15126503-L.jpg"
+                      portada_path: "/storage/covers/9780132350884_e1e49bef.jpg"
+                    meta: { request_id: "c677edf332656172" }
+                    errors: null
+        '400':
+          description: Error de validación
           content:
             application/json:
               schema: { $ref: '#/components/schemas/Envelope' }
               examples:
-                created:
+                invalid:
                   value:
-                    data:
-                      id: "aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee"
-                      titulo: "The Pragmatic Programmer"
-                      autor: "Andrew Hunt; David Thomas"
-                      isbn: "9780201616224"
-                      anio_publicacion: 1999
-                      descripcion: "A classic software engineering book."
-                      portada_url: "https://covers.openlibrary.org/b/isbn/9780201616224-L.jpg"
-                    meta:
-                      request_id: "abcd1234efef5678"
-                      # Si falló el enriquecimiento externo pero se creó:
-                      # external_status: 503
-                    errors: null
-        '400':
-          $ref: '#/components/responses/ValidationError'
+                    data: null
+                    meta: { request_id: "a73d764e0841d800" }
+                    errors:
+                      - code: VALIDATION_ERROR
+                        message: "Errores de validación"
+                        details: { isbn: "inválido" }
         '401':
-          $ref: '#/components/responses/Unauthorized'
+          description: No autenticado
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Envelope' }
         '409':
-          $ref: '#/components/responses/Conflict'
-        '429':
-          $ref: '#/components/responses/TooManyRequests'
-        '500':
-          $ref: '#/components/responses/InternalError'
+          description: Conflicto (ISBN existente)
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Envelope' }
 
   /api/v1/libros/{id}:
     get:
-      tags: [Books]
-      summary: Get book by id
+      security: [{ bearerAuth: [] }]
+      tags: [Libros]
+      summary: Obtener un libro por ID
       operationId: getBook
       parameters:
         - name: id
@@ -250,108 +285,68 @@ paths:
           schema: { type: string, format: uuid }
       responses:
         '200':
-          description: A book
+          description: OK
           headers:
-            X-RateLimit-Limit:
-              $ref: '#/components/headers/X-RateLimit-Limit'
-            X-RateLimit-Remaining:
-              $ref: '#/components/headers/X-RateLimit-Remaining'
-            X-RateLimit-Reset:
-              $ref: '#/components/headers/X-RateLimit-Reset'
+            X-Request-Id: { schema: { type: string } }
+            X-Cache: { schema: { type: string, enum: [HIT, MISS] } }
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/EnvelopeBook' }
+        '404':
+          description: No encontrado
           content:
             application/json:
               schema: { $ref: '#/components/schemas/Envelope' }
-              examples:
-                ok:
-                  value:
-                    data:
-                      id: "11111111-1111-1111-1111-111111111111"
-                      titulo: "El nombre del viento"
-                      autor: "Patrick Rothfuss"
-                      isbn: "9788401337208"
-                      anio_publicacion: 2007
-                      descripcion: "Un joven llamado Kvothe narra su vida."
-                      portada_url: "https://covers.openlibrary.org/b/isbn/9788401337208-L.jpg"
-                      created_at: "2025-10-18 18:24:23"
-                      created_by: "00000000-0000-0000-0000-000000000001"
-                      updated_at: null
-                      updated_by: null
-                      deleted_at: null
-                      deleted_by: null
-                    meta:
-                      request_id: "abc123"
-                    errors: null
-        '404':
-          $ref: '#/components/responses/NotFound'
-        '429':
-          $ref: '#/components/responses/TooManyRequests'
     put:
-      tags: [Books]
-      summary: Update book
+      security: [{ bearerAuth: [] }]
+      tags: [Libros]
+      summary: Actualizar libro (con refresh opcional de portada)
       operationId: updateBook
-      security:
-        - bearerAuth: []
       parameters:
         - name: id
           in: path
           required: true
           schema: { type: string, format: uuid }
+        - name: refresh_cover
+          in: query
+          required: false
+          schema: { type: string, enum: ['0','1'], default: '0' }
+          description: Si vale 1, fuerza re-descarga de portada local desde la URL remota.
       requestBody:
         required: true
         content:
           application/json:
-            schema: { $ref: '#/components/schemas/BookUpdate' }
-            examples:
-              patch:
-                value:
-                  titulo: "El nombre del viento (ed. revisada)"
+            schema:
+              type: object
+              description: "Cualquiera de los campos, al menos uno."
       responses:
         '200':
-          description: Updated
+          description: OK
           headers:
-            X-RateLimit-Limit:
-              $ref: '#/components/headers/X-RateLimit-Limit'
-            X-RateLimit-Remaining:
-              $ref: '#/components/headers/X-RateLimit-Remaining'
-            X-RateLimit-Reset:
-              $ref: '#/components/headers/X-RateLimit-Reset'
+            X-Request-Id: { schema: { type: string } }
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/EnvelopeBook' }
+        '400':
+          description: Validación
           content:
             application/json:
               schema: { $ref: '#/components/schemas/Envelope' }
-              examples:
-                ok:
-                  value:
-                    data:
-                      id: "11111111-1111-1111-1111-111111111111"
-                      titulo: "El nombre del viento (ed. revisada)"
-                      autor: "Patrick Rothfuss"
-                      isbn: "9788401337208"
-                      anio_publicacion: 2007
-                      descripcion: "Un joven llamado Kvothe narra su vida."
-                      portada_url: "https://covers.openlibrary.org/b/isbn/9788401337208-L.jpg"
-                    meta:
-                      request_id: "abc123"
-                      # Si enriquecimiento externo falló:
-                      # external_status: 503
-                    errors: null
-        '400':
-          $ref: '#/components/responses/ValidationError'
-        '401':
-          $ref: '#/components/responses/Unauthorized'
         '404':
-          $ref: '#/components/responses/NotFound'
+          description: No encontrado
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Envelope' }
         '409':
-          $ref: '#/components/responses/Conflict'
-        '429':
-          $ref: '#/components/responses/TooManyRequests'
-        '500':
-          $ref: '#/components/responses/InternalError'
+          description: Conflicto (ISBN existente)
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Envelope' }
     delete:
-      tags: [Books]
-      summary: Delete book (soft/hard by config)
+      security: [{ bearerAuth: [] }]
+      tags: [Libros]
+      summary: Eliminar libro (soft/hard según config)
       operationId: deleteBook
-      security:
-        - bearerAuth: []
       parameters:
         - name: id
           in: path
@@ -359,22 +354,12 @@ paths:
           schema: { type: string, format: uuid }
       responses:
         '204':
-          description: Deleted (no content)
-          headers:
-            X-RateLimit-Limit:
-              $ref: '#/components/headers/X-RateLimit-Limit'
-            X-RateLimit-Remaining:
-              $ref: '#/components/headers/X-RateLimit-Remaining'
-            X-RateLimit-Reset:
-              $ref: '#/components/headers/X-RateLimit-Reset'
-        '401':
-          $ref: '#/components/responses/Unauthorized'
+          description: No Content
         '404':
-          $ref: '#/components/responses/NotFound'
-        '429':
-          $ref: '#/components/responses/TooManyRequests'
-        '500':
-          $ref: '#/components/responses/InternalError'
+          description: No encontrado
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Envelope' }
 
 components:
   securitySchemes:
@@ -383,271 +368,78 @@ components:
       scheme: bearer
       bearerFormat: JWT
 
-  parameters:
-    q:
-      name: q
-      in: query
-      description: Search in title/author (accent/case-insensitive)
-      schema: { type: string, maxLength: 150 }
-    titulo:
-      name: titulo
-      in: query
-      description: Filter by title (exact/partial, normalized)
-      schema: { type: string, maxLength: 150 }
-    autor:
-      name: autor
-      in: query
-      description: Filter by author (exact/partial, normalized)
-      schema: { type: string, maxLength: 100 }
-    sort:
-      name: sort
-      in: query
-      description: Sort field
-      schema:
-        type: string
-        enum: [titulo, autor, anio_publicacion, created_at]
-        default: titulo
-    direction:
-      name: direction
-      in: query
-      description: Sort direction
-      schema:
-        type: string
-        enum: [asc, desc]
-        default: asc
-    page:
-      name: page
-      in: query
-      description: Page number (1-based)
-      schema: { type: integer, minimum: 1, default: 1 }
-    per_page:
-      name: per_page
-      in: query
-      description: Items per page
-      schema: { type: integer, minimum: 1, maximum: 100, default: 20 }
-
-  headers:
-    X-RateLimit-Limit:
-      description: Maximum requests per minute
-      schema: { type: integer, example: 60 }
-    X-RateLimit-Remaining:
-      description: Remaining requests in current window
-      schema: { type: integer, example: 15 }
-    X-RateLimit-Reset:
-      description: UNIX epoch when the quota resets
-      schema: { type: integer, example: 1739973060 }
-
-  responses:
-    Unauthorized:
-      description: Unauthorized
-      content:
-        application/json:
-          schema: { $ref: '#/components/schemas/Envelope' }
-          examples:
-            unauthorized:
-              value:
-                data: null
-                meta: { request_id: "2ba4d86898272322" }
-                errors:
-                  - code: UNAUTHORIZED
-                    message: Invalid credentials
-    NotFound:
-      description: Not found
-      content:
-        application/json:
-          schema: { $ref: '#/components/schemas/Envelope' }
-          examples:
-            notFound:
-              value:
-                data: null
-                meta: { request_id: "4b503d483cf6d851" }
-                errors:
-                  - code: NOT_FOUND
-                    message: Route not found
-    Conflict:
-      description: Conflict
-      content:
-        application/json:
-          schema: { $ref: '#/components/schemas/Envelope' }
-          examples:
-            dup:
-              value:
-                data: null
-                meta: { request_id: "8340b41f7ff2418e" }
-                errors:
-                  - code: CONFLICT
-                    message: "ISBN ya existe"
-    ValidationError:
-      description: Validation error
-      content:
-        application/json:
-          schema: { $ref: '#/components/schemas/Envelope' }
-          examples:
-            invalid-isbn:
-              value:
-                data: null
-                meta: { request_id: "a73d764e0841d800" }
-                errors:
-                  - code: VALIDATION_ERROR
-                    message: "Errores de validación"
-                    details:
-                      isbn: "inválido"
-    TooManyRequests:
-      description: Too many requests
-      headers:
-        X-RateLimit-Limit:
-          $ref: '#/components/headers/X-RateLimit-Limit'
-        X-RateLimit-Remaining:
-          $ref: '#/components/headers/X-RateLimit-Remaining'
-        X-RateLimit-Reset:
-          $ref: '#/components/headers/X-RateLimit-Reset'
-      content:
-        application/json:
-          schema: { $ref: '#/components/schemas/Envelope' }
-          examples:
-            limited:
-              value:
-                data: null
-                meta: {}
-                errors:
-                  - code: RATE_LIMITED
-                    message: Too many requests
-    InternalError:
-      description: Internal server error
-      content:
-        application/json:
-          schema: { $ref: '#/components/schemas/Envelope' }
-          examples:
-            error:
-              value:
-                data: null
-                meta: { request_id: "xxx" }
-                errors:
-                  - code: INTERNAL_ERROR
-                    message: "Unexpected error"
-
   schemas:
     Envelope:
       type: object
       required: [data, meta, errors]
       properties:
-        data:
-          nullable: true
+        data: {}
         meta:
           type: object
           additionalProperties: true
-          description: Extra metadata (e.g., pagination, request_id, external_status)
+          description: Metadatos como request_id, paginación, etc.
         errors:
           type: array
           nullable: true
           items:
-            $ref: '#/components/schemas/ErrorItem'
+            $ref: '#/components/schemas/Error'
 
-    ErrorItem:
-      type: object
-      required: [code, message]
-      properties:
-        code: { type: string }
-        message: { type: string }
-        details:
-          type: object
-          additionalProperties: true
-        trace:
-          type: array
-          items: { type: string }
+    EnvelopeBook:
+      allOf:
+        - $ref: '#/components/schemas/Envelope'
+        - type: object
+          properties:
+            data:
+              $ref: '#/components/schemas/Book'
+
+    EnvelopeBooksList:
+      allOf:
+        - $ref: '#/components/schemas/Envelope'
+        - type: object
+          properties:
+            data:
+              type: array
+              items: { $ref: '#/components/schemas/Book' }
+            meta:
+              type: object
+              required: [page, per_page, total, sort, direction, request_id]
+              properties:
+                page: { type: integer }
+                per_page: { type: integer }
+                total: { type: integer }
+                sort: { type: string }
+                direction: { type: string, enum: [asc, desc] }
+                request_id: { type: string }
 
     Book:
       type: object
       required: [id, titulo, autor, isbn, created_at, created_by]
       properties:
-        id:        { type: string, format: uuid }
-        titulo:    { type: string, maxLength: 150 }
-        autor:     { type: string, maxLength: 100 }
-        isbn:      { type: string, maxLength: 13, description: "ISBN-10/13 valid" }
-        anio_publicacion:
-          type: integer
-          nullable: true
-        descripcion:
-          type: string
-          nullable: true
-          maxLength: 2000
-        portada_url:
-          type: string
-          nullable: true
-          maxLength: 512
-        created_at: { type: string }
+        id: { type: string, format: uuid }
+        titulo: { type: string, maxLength: 150 }
+        autor: { type: string, maxLength: 100 }
+        isbn: { type: string, description: "ISBN-10 o ISBN-13 (validado)" }
+        anio_publicacion: { type: integer, nullable: true }
+        descripcion: { type: string, nullable: true, maxLength: 2000 }
+        portada_url: { type: string, nullable: true, format: uri, description: "URL remota (OpenLibrary u otros)" }
+        portada_path: { type: string, nullable: true, description: "Ruta pública local (servida por Nginx), p.ej. /storage/covers/xxx.jpg" }
+        created_at: { type: string, format: date-time }
         created_by: { type: string, format: uuid }
-        updated_at:
-          type: string
-          nullable: true
-        updated_by:
-          type: string
-          format: uuid
-          nullable: true
-        deleted_at:
-          type: string
-          nullable: true
-        deleted_by:
-          type: string
-          format: uuid
-          nullable: true
+        updated_at: { type: string, format: date-time, nullable: true }
+        updated_by: { type: string, format: uuid, nullable: true }
+        deleted_at: { type: string, format: date-time, nullable: true }
+        deleted_by: { type: string, format: uuid, nullable: true }
 
-    BookCreate:
+    Error:
       type: object
-      required: [titulo, autor, isbn]
+      required: [code, message]
       properties:
-        titulo: { type: string, maxLength: 150 }
-        autor:  { type: string, maxLength: 100 }
-        isbn:   { type: string, description: "ISBN-10/13" }
-        anio_publicacion:
-          type: integer
-          nullable: true
-        descripcion:
+        code:
           type: string
-          nullable: true
-          maxLength: 2000
-        portada_url:
+          example: VALIDATION_ERROR
+        message:
           type: string
-          nullable: true
-          maxLength: 512
-
-    BookUpdate:
-      type: object
-      properties:
-        titulo: { type: string, maxLength: 150 }
-        autor:  { type: string, maxLength: 100 }
-        isbn:   { type: string, description: "ISBN-10/13" }
-        anio_publicacion:
-          type: integer
-          nullable: true
-        descripcion:
-          type: string
-          nullable: true
-          maxLength: 2000
-        portada_url:
-          type: string
-          nullable: true
-          maxLength: 512
-
-    AuthLoginRequest:
-      type: object
-      required: [username, password]
-      properties:
-        username: { type: string }
-        password: { type: string, format: password }
-
-    AuthLoginResponse:
-      type: object
-      required: [access_token, token_type, expires_in, user]
-      properties:
-        access_token: { type: string }
-        token_type: { type: string, example: Bearer }
-        expires_in: { type: integer, example: 3600 }
-        refresh_token: { type: string }
-        user:
+        details:
           type: object
-          required: [id, name, role]
-          properties:
-            id:   { type: string, format: uuid }
-            name: { type: string }
-            role: { type: string, enum: [usuario, admin] }
+          additionalProperties: true
+          nullable: true
