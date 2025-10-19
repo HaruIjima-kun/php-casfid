@@ -6,35 +6,46 @@ use App\Infrastructure\Http\Request;
 use App\Infrastructure\Http\Response;
 use App\Infrastructure\Http\Router;
 use App\Infrastructure\Logging\Logger;
+
+// Middlewares
 use App\Infrastructure\Http\Middlewares\RequestIdMiddleware;
 use App\Infrastructure\Http\Middlewares\AuthMiddleware;
-use App\Infrastructure\Http\Middlewares\RateLimitMiddleware;
-use App\Infrastructure\Http\Middlewares\RateLimitRedisMiddleware;
+use App\Infrastructure\Http\Middlewares\RateLimitMiddleware;        // fallback in-memory
+use App\Infrastructure\Http\Middlewares\RateLimitRedisMiddleware;   // Redis real
+use App\Infrastructure\Http\Middlewares\ResponseCacheRedisMiddleware; // Caché de respuestas
+
+// Redis cache infra
 use App\Infrastructure\Cache\RedisClientFactory;
 use App\Infrastructure\Cache\RedisCache;
+
+// Controllers
 use App\Interfaces\Http\Controllers\BookController;
 use App\Interfaces\Http\Controllers\AuthController;
 
 require __DIR__ . '/../vendor/autoload.php';
 
-$config = new Config();
+$config = new Config(__DIR__ . '/..');
 $router = new Router();
 $logger = new Logger($config);
 
-// Redis setup
+// Redis (si está disponible)
 $redis = RedisClientFactory::make($config);
 $cache = $redis ? new RedisCache($redis) : null;
 
 // --- Middlewares globales ---
-// Rate limiting
+
+// 1) Rate limit (Redis si existe; si no, fallback a in-memory)
 if ($redis !== null) {
     $router->middleware(new RateLimitRedisMiddleware($config, $redis));
 } else {
     $router->middleware(new RateLimitMiddleware($config));
 }
 
-// Request ID tracking
+// 2) Request ID para trazabilidad
 $router->middleware(new RequestIdMiddleware());
+
+// 3) Caché de respuestas GET con Redis (X-Cache: MISS/HIT)
+$router->middleware(new ResponseCacheRedisMiddleware($config, $redis));
 
 // --- Rutas públicas ---
 $router->get('/', function (Request $req) use ($config) {
@@ -61,7 +72,7 @@ $router->post('/api/v1/libros', fn(Request $req) => $bookController->store($req)
 $router->put('/api/v1/libros/{id}', fn(Request $req) => $bookController->update($req));
 $router->delete('/api/v1/libros/{id}', fn(Request $req) => $bookController->destroy($req));
 
-// --- Manejo de errores ---
+// --- Manejo de errores de última instancia ---
 try {
     $router->dispatch(Request::capture());
 } catch (Throwable $e) {
