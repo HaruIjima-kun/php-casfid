@@ -98,6 +98,7 @@ final class MySqlBookRepository implements BookRepository
         return ['items' => $items, 'total' => $total];
     }
 
+    /** @param array<string, mixed> $data */
     public function create(array $data): void
     {
         $sql = "INSERT INTO libros
@@ -120,6 +121,7 @@ final class MySqlBookRepository implements BookRepository
         $stmt->execute();
     }
 
+    /** @param array<string, mixed> $data */
     public function update(string $id, array $data): bool
     {
         $sql = "UPDATE libros SET
@@ -165,6 +167,9 @@ final class MySqlBookRepository implements BookRepository
         return $stmt->rowCount() > 0;
     }
 
+    /**
+     * @return array<string,mixed>|null
+     */
     public function findById(string $id): ?array
     {
         $stmt = $this->pdo->prepare("SELECT * FROM libros WHERE id = :id");
