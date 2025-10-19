@@ -3,7 +3,6 @@ declare(strict_types=1);
 
 use PHPUnit\Framework\TestCase;
 use App\Infrastructure\Persistence\MySqlBookRepository;
-use PDO;
 
 final class BookRepositoryTest extends TestCase
 {
