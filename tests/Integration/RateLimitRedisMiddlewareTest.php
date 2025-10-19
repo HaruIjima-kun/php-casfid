@@ -18,44 +18,41 @@ final class RateLimitRedisMiddlewareTest extends TestCase
             $this->markTestSkipped('Redis not available');
         }
 
-        // Usa el límite configurado, pero no nos importa su valor exacto
-        $limit  = (int)($cfg->get('CLIENT_RATE_LIMIT_PER_MINUTE', '5') ?? '5');
+        // Tomamos el límite real desde config
+        $limit  = (int)($cfg->get('CLIENT_RATE_LIMIT_PER_MINUTE', '60') ?? '60');
         $prefix = $cfg->get('REDIS_RATE_PREFIX', 'ratelimit') ?? 'ratelimit';
 
+        // Identidad de prueba por IP (sin token)
         $ip = '127.0.0.1';
         $_SERVER['REMOTE_ADDR'] = $ip;
 
+        // Ventana actual de 60s
         $win = (int)floor(time() / 60);
-        $redis->del("{$prefix}:ip:{$ip}:{$win}");
+        $key = "{$prefix}:ip:{$ip}:{$win}";
 
+        // Dejamos el contador exactamente en el límite para que la siguiente llamada exceda
+        // Usamos SET con EX=60 para asegurar expiración
+        $redis->set($key, (string)$limit, ['ex' => 60]);
+
+        // Middleware bajo prueba
         $mw = new RateLimitRedisMiddleware($cfg, $redis);
         $next = function (Request $r): void {
             // no-op
         };
         $req = new Request('GET', '/', [], [], []);
 
-        // Consumimos (limit + 1) y validamos 429 + payload
-        $hit429 = false;
-        $gotPayload = false;
+        // Disparo único que debe exceder → 429 + payload
+        http_response_code(200);
+        ob_start();
+        $mw->handle($req, $next);
+        $out = (string)ob_get_clean();
 
-        for ($i = 0; $i < $limit + 1; $i++) {
-            http_response_code(200);
+        $this->assertSame(429, http_response_code(), 'Expected HTTP 429 after exceeding rate limit');
 
-            ob_start();
-            $mw->handle($req, $next);
-            $out = (string)ob_get_clean();
-
-            if (http_response_code() === 429) {
-                $hit429 = true;
-                $decoded = json_decode($out, true);
-                if (is_array($decoded) && isset($decoded['errors'][0]['code'])) {
-                    $gotPayload = ($decoded['errors'][0]['code'] === 'RATE_LIMITED');
-                }
-                break;
-            }
-        }
-
-        $this->assertTrue($hit429, 'Expected 429 after exceeding rate limit');
-        $this->assertTrue($gotPayload, 'Expected RATE_LIMITED error payload on 429');
+        $decoded = json_decode($out, true);
+        $this->assertIsArray($decoded, 'Response should be JSON object');
+        $this->assertArrayHasKey('errors', $decoded);
+        $this->assertIsArray($decoded['errors']);
+        $this->assertSame('RATE_LIMITED', $decoded['errors'][0]['code'] ?? null);
     }
 }
