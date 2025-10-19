@@ -11,29 +11,32 @@ final class RateLimitRedisMiddlewareTest extends TestCase
 {
     public function test_limit_exceeded_returns_429(): void
     {
-        $cfg = new Config();
+        // Pasa el path base del proyecto a Config (raíz del repo)
+        $cfg = new Config(dirname(__DIR__, 2));
+
         $redis = RedisClientFactory::make($cfg);
         if ($redis === null) {
             $this->markTestSkipped('Redis not available');
         }
 
-        $limit = (int)($cfg->get('CLIENT_RATE_LIMIT_PER_MINUTE', '5') ?? '5');
+        $limit  = (int)($cfg->get('CLIENT_RATE_LIMIT_PER_MINUTE', '5') ?? '5');
         $prefix = $cfg->get('REDIS_RATE_PREFIX', 'ratelimit') ?? 'ratelimit';
+
         $ip = '127.0.0.1';
         $_SERVER['REMOTE_ADDR'] = $ip;
 
         // limpia ventana actual
-        $win = (int)floor(time()/60);
+        $win = (int)floor(time() / 60);
         $redis->del("{$prefix}:ip:{$ip}:{$win}");
 
         $mw = new RateLimitRedisMiddleware($cfg, $redis);
 
         $hit429 = false;
-        $next = function(Request $r) use (&$hit429): void {
+        $next = function (Request $r): void {
             // no-op
         };
 
-        // crea request basico
+        // request básico
         $req = new Request('GET', '/', [], [], []);
 
         // consumimos (limit + 1)

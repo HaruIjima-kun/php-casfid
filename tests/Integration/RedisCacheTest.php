@@ -10,7 +10,9 @@ final class RedisCacheTest extends TestCase
 {
     public function test_set_get_ttl(): void
     {
-        $cfg = new Config();
+        // Pasa el path base del proyecto a Config (raíz del repo)
+        $cfg = new Config(dirname(__DIR__, 2));
+
         $redis = RedisClientFactory::make($cfg);
         if ($redis === null) {
             $this->markTestSkipped('Redis not available');
