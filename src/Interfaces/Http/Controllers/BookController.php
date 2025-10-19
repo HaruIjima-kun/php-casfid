@@ -14,7 +14,6 @@ use App\Infrastructure\External\OpenLibraryClient;
 use App\Shared\Uuid;
 use App\Shared\Clock;
 use Throwable;
-use PDO;
 use PDOException;
 
 final class BookController
@@ -34,24 +33,33 @@ final class BookController
      */
     public function index(Request $req): void
     {
-        $q       = $req->queryParam('q');
-        $titulo  = $req->queryParam('titulo');
-        $autor   = $req->queryParam('autor');
-        $page    = max(1, (int)$req->queryParam('page', '1'));
-        $perPage = max(1, (int)$req->queryParam('per_page', (string)($this->config->get('PAGINATION_PER_PAGE', '20'))));
-        $sort    = $req->queryParam('sort', 'titulo');
-        $direction = strtolower($req->queryParam('direction', 'asc')) === 'desc' ? 'desc' : 'asc';
+        $q = trim((string)$req->queryParam('q', ''));
+        $titulo = trim((string)$req->queryParam('titulo', ''));
+        $autor = trim((string)$req->queryParam('autor', ''));
+        $sort = (string)$req->queryParam('sort', 'titulo');
+        $direction = (string)$req->queryParam('direction', 'asc');
+        $page = (int)$req->queryParam('page', '1');
+        $perPage = (int)$req->queryParam('per_page', (string)($this->config->get('PAGINATION_PER_PAGE', '20') ?? '20'));
 
-        $result = $this->repo->search($q, $titulo, $autor, $page, $perPage, $sort, $direction);
+        // Orden de parámetros corregido para el repositorio:
+        $result = $this->repo->search(
+            $q !== '' ? $q : null,
+            $titulo !== '' ? $titulo : null,
+            $autor !== '' ? $autor : null,
+            $sort,
+            strtolower($direction) === 'desc' ? 'desc' : 'asc',
+            $page,
+            $perPage
+        );
 
         Response::json(
-            $result['data'],
+            $result['items'], // array de Book->toArray() en el repo
             [
-                'page'       => $page,
-                'per_page'   => $perPage,
-                'total'      => $result['total'],
-                'sort'       => $sort,
-                'direction'  => $direction,
+                'page' => $page,
+                'per_page' => $perPage,
+                'total' => $result['total'],
+                'sort' => $sort,
+                'direction' => strtolower($direction) === 'desc' ? 'desc' : 'asc',
             ]
         );
     }
@@ -62,39 +70,46 @@ final class BookController
     public function store(Request $req): void
     {
         $userId = $_SERVER['AUTH_USER_ID'] ?? '00000000-0000-0000-0000-000000000001';
-        $body = $req->json() ?? [];
+        $body = $req->json();
 
         $titulo = trim((string)($body['titulo'] ?? ''));
-        $autor  = trim((string)($body['autor'] ?? ''));
+        $autor = trim((string)($body['autor'] ?? ''));
         $isbnIn = trim((string)($body['isbn'] ?? ''));
-        $anio   = isset($body['anio_publicacion']) ? (int)$body['anio_publicacion'] : null;
+        $anio = isset($body['anio_publicacion']) && $body['anio_publicacion'] !== ''
+            ? (int)$body['anio_publicacion']
+            : null;
 
         $errors = [];
         if ($titulo === '' || mb_strlen($titulo) > 150) $errors['titulo'] = 'obligatorio (<=150)';
-        if ($autor === ''  || mb_strlen($autor)  > 100) $errors['autor']  = 'obligatorio (<=100)';
-        try { $isbn = (new Isbn($isbnIn))->value(); } catch (Throwable $e) { $errors['isbn'] = 'inválido'; $isbn=$isbnIn; }
+        if ($autor === '' || mb_strlen($autor) > 100) $errors['autor'] = 'obligatorio (<=100)';
+        try {
+            $isbn = (new Isbn($isbnIn))->value();
+        } catch (Throwable) {
+            $errors['isbn'] = 'inválido';
+            $isbn = $isbnIn;
+        }
         if ($anio !== null) {
             $max = (int)date('Y') + 3;
             if ($anio > $max) $errors['anio_publicacion'] = "debe ser <= {$max}";
         }
         if ($errors) {
-            Response::json(null, [], [['code'=>'VALIDATION_ERROR','message'=>'Errores de validación','details'=>$errors]], 400);
+            Response::json(null, [], [['code' => 'VALIDATION_ERROR', 'message' => 'Errores de validación', 'details' => $errors]], 400);
             return;
         }
 
         $descripcion = null;
-        $portadaUrl  = null;
-        $apiFailed   = false;
+        $portadaUrl = null;
+        $apiFailed = false;
 
         try {
             $client = new OpenLibraryClient($this->config);
             $bk = $isbn ? $client->getByIsbn($isbn) : [];
             if ($bk) {
                 $descripcion = $bk['description']['value'] ?? ($bk['description'] ?? null);
-                if (isset($bk['cover']['large']))   $portadaUrl = $bk['cover']['large'];
+                if (isset($bk['cover']['large'])) $portadaUrl = $bk['cover']['large'];
                 elseif (isset($bk['cover']['medium'])) $portadaUrl = $bk['cover']['medium'];
-                elseif (isset($bk['cover']['small']))  $portadaUrl = $bk['cover']['small'];
-                if ($anio === null && isset($bk['publish_date']) && preg_match('/(\d{4})/',$bk['publish_date'],$m)) {
+                elseif (isset($bk['cover']['small'])) $portadaUrl = $bk['cover']['small'];
+                if ($anio === null && isset($bk['publish_date']) && preg_match('/(\d{4})/', $bk['publish_date'], $m)) {
                     $anio = (int)$m[1];
                 }
                 if ($autor === '' && !empty($bk['authors'][0]['name'])) $autor = (string)$bk['authors'][0]['name'];
@@ -102,12 +117,20 @@ final class BookController
                 $sr = $client->searchByTitleAuthor($titulo, $autor);
                 if (!empty($sr['docs'][0])) {
                     $doc = $sr['docs'][0];
-                    $descripcion ??= $doc['first_sentence'] ?? null;
-                    if (!$portadaUrl && !empty($doc['isbn'][0])) $portadaUrl = "https://covers.openlibrary.org/b/isbn/{$doc['isbn'][0]}-L.jpg";
-                    if ($anio === null && isset($doc['first_publish_year'])) $anio = (int)$doc['first_publish_year'];
+                    if ($descripcion === null && isset($doc['first_sentence'])) {
+                        $descripcion = is_array($doc['first_sentence'])
+                            ? ($doc['first_sentence']['value'] ?? null)
+                            : $doc['first_sentence'];
+                    }
+                    if ($portadaUrl === null && !empty($doc['isbn'][0])) {
+                        $portadaUrl = "https://covers.openlibrary.org/b/isbn/{$doc['isbn'][0]}-L.jpg";
+                    }
+                    if ($anio === null && isset($doc['first_publish_year'])) {
+                        $anio = (int)$doc['first_publish_year'];
+                    }
                 }
             }
-        } catch (Throwable $e) {
+        } catch (Throwable) {
             $apiFailed = true;
             $this->logger->warning('external.openlibrary.partial_or_failed', ['isbn' => $isbn, 'titulo' => $titulo, 'autor' => $autor]);
         }
@@ -128,7 +151,7 @@ final class BookController
             ]);
         } catch (PDOException $e) {
             if ((int)$e->getCode() === 23000 || str_contains($e->getMessage(), 'Duplicate')) {
-                Response::json(null, [], [['code'=>'CONFLICT','message'=>'ISBN ya existe']], 409);
+                Response::json(null, [], [['code' => 'CONFLICT', 'message' => 'ISBN ya existe']], 409);
                 return;
             }
             throw $e;
@@ -137,7 +160,9 @@ final class BookController
         $this->logger->info('book.created', ['id' => $id, 'isbn' => $isbn, 'titulo' => $titulo, 'autor' => $autor]);
 
         $meta = [];
-        if ($apiFailed) { $meta['external_status'] = 503; }
+        if ($apiFailed) {
+            $meta['external_status'] = 503;
+        }
 
         Response::json([
             'id' => $id,
@@ -155,57 +180,71 @@ final class BookController
      */
     public function update(Request $req): void
     {
-        $userId = $_SERVER['AUTH_USER_ID'] ?? null;
-        $body = $req->json() ?? [];
+        $userId = $_SERVER['AUTH_USER_ID'] ?? '00000000-0000-0000-0000-000000000001';
+        $body = $req->json();
 
         $id = $_SERVER['ROUTE_PARAMS']['id'] ?? null;
         if (!$id) {
-            Response::json(null, [], [['code'=>'BAD_REQUEST','message'=>'Missing id']], 400);
+            Response::json(null, [], [['code' => 'BAD_REQUEST', 'message' => 'Missing id']], 400);
             return;
         }
 
         $exists = $this->repo->findById($id);
         if (!$exists || $exists['deleted_at'] !== null) {
-            Response::json(null, [], [['code'=>'NOT_FOUND','message'=>'Libro no encontrado']], 404);
+            Response::json(null, [], [['code' => 'NOT_FOUND', 'message' => 'Libro no encontrado']], 404);
             return;
         }
 
         $titulo = trim((string)($body['titulo'] ?? $exists['titulo']));
-        $autor  = trim((string)($body['autor']  ?? $exists['autor']));
-        $isbnIn = trim((string)($body['isbn']   ?? $exists['isbn']));
-        $anio   = array_key_exists('anio_publicacion', $body)
-            ? (($body['anio_publicacion']===''||$body['anio_publicacion']===null) ? null : (int)$body['anio_publicacion'])
+        $autor = trim((string)($body['autor'] ?? $exists['autor']));
+        $isbnIn = trim((string)($body['isbn'] ?? $exists['isbn']));
+        $anio = array_key_exists('anio_publicacion', $body)
+            ? (($body['anio_publicacion'] === '' || $body['anio_publicacion'] === null) ? null : (int)$body['anio_publicacion'])
             : ($exists['anio_publicacion'] !== null ? (int)$exists['anio_publicacion'] : null);
 
         $errors = [];
         if ($titulo === '' || mb_strlen($titulo) > 150) $errors['titulo'] = 'obligatorio (<=150)';
-        if ($autor === ''  || mb_strlen($autor)  > 100) $errors['autor']  = 'obligatorio (<=100)';
-        try { $isbn = (new Isbn($isbnIn))->value(); } catch (Throwable $e) { $errors['isbn'] = 'inválido'; $isbn=$isbnIn; }
+        if ($autor === '' || mb_strlen($autor) > 100) $errors['autor'] = 'obligatorio (<=100)';
+        try {
+            $isbn = (new Isbn($isbnIn))->value();
+        } catch (Throwable) {
+            $errors['isbn'] = 'inválido';
+            $isbn = $isbnIn;
+        }
         if ($anio !== null) {
             $max = (int)date('Y') + 3;
             if ($anio > $max) $errors['anio_publicacion'] = "debe ser <= {$max}";
         }
         if ($errors) {
-            Response::json(null, [], [['code'=>'VALIDATION_ERROR','message'=>'Errores de validación','details'=>$errors]], 400);
+            Response::json(null, [], [['code' => 'VALIDATION_ERROR', 'message' => 'Errores de validación', 'details' => $errors]], 400);
             return;
         }
 
         $descripcion = $exists['descripcion'];
-        $portadaUrl  = $exists['portada_url'];
-        $apiFailed   = false;
+        $portadaUrl = $exists['portada_url'];
+        $apiFailed = false;
 
-        if (!$descripcion || !$portadaUrl || $isbn !== $exists['isbn'] || $titulo !== $exists['titulo'] || $autor !== $exists['autor']) {
+        // Flag explícita para evitar el warning "negated boolean is always true"
+        $needsEnrichment = ($descripcion === null)
+            || ($portadaUrl === null)
+            || ($isbn !== $exists['isbn'])
+            || ($titulo !== $exists['titulo'])
+            || ($autor !== $exists['autor']);
+
+        if ($needsEnrichment) {
             try {
                 $client = new OpenLibraryClient($this->config);
                 $bk = $isbn ? $client->getByIsbn($isbn) : [];
                 if ($bk) {
-                    $descripcion = $descripcion ?: ($bk['description']['value'] ?? ($bk['description'] ?? null));
-                    if (!$portadaUrl) {
-                        if (isset($bk['cover']['large']))   $portadaUrl = $bk['cover']['large'];
-                        elseif (isset($bk['cover']['medium'])) $portadaUrl = $bk['cover']['medium'];
-                        elseif (isset($bk['cover']['small']))  $portadaUrl = $bk['cover']['small'];
+                    if ($descripcion === null) {
+                        $descripcion = $bk['description']['value'] ?? ($bk['description'] ?? null);
                     }
-                    if ($anio === null && isset($bk['publish_date']) && preg_match('/(\d{4})/',$bk['publish_date'],$m)) {
+                    if ($portadaUrl === null) {
+                        if (isset($bk['cover']['large'])) $portadaUrl = $bk['cover']['large'];
+                        elseif (isset($bk['cover']['medium'])) $portadaUrl = $bk['cover']['medium'];
+                        elseif (isset($bk['cover']['small'])) $portadaUrl = $bk['cover']['small'];
+                    }
+                    if ($anio === null && isset($bk['publish_date']) && preg_match('/(\d{4})/', $bk['publish_date'], $m)) {
                         $anio = (int)$m[1];
                     }
                     if ($autor === '' && !empty($bk['authors'][0]['name'])) $autor = (string)$bk['authors'][0]['name'];
@@ -213,12 +252,20 @@ final class BookController
                     $sr = $client->searchByTitleAuthor($titulo, $autor);
                     if (!empty($sr['docs'][0])) {
                         $doc = $sr['docs'][0];
-                        $descripcion ??= $doc['first_sentence'] ?? null;
-                        if (!$portadaUrl && !empty($doc['isbn'][0])) $portadaUrl = "https://covers.openlibrary.org/b/isbn/{$doc['isbn'][0]}-L.jpg";
-                        if ($anio === null && isset($doc['first_publish_year'])) $anio = (int)$doc['first_publish_year'];
+                        if ($descripcion === null && isset($doc['first_sentence'])) {
+                            $descripcion = is_array($doc['first_sentence'])
+                                ? ($doc['first_sentence']['value'] ?? null)
+                                : $doc['first_sentence'];
+                        }
+                        if ($portadaUrl === null && !empty($doc['isbn'][0])) {
+                            $portadaUrl = "https://covers.openlibrary.org/b/isbn/{$doc['isbn'][0]}-L.jpg";
+                        }
+                        if ($anio === null && isset($doc['first_publish_year'])) {
+                            $anio = (int)$doc['first_publish_year'];
+                        }
                     }
                 }
-            } catch (Throwable $e) {
+            } catch (Throwable) {
                 $apiFailed = true;
                 $this->logger->warning('external.openlibrary.partial_or_failed', ['isbn' => $isbn, 'id' => $id]);
             }
@@ -233,25 +280,26 @@ final class BookController
                 'descripcion' => $descripcion,
                 'portada_url' => $portadaUrl,
                 'updated_at' => Clock::now(),
-                'updated_by' => $userId ?: '00000000-0000-0000-0000-000000000001',
+                'updated_by' => $userId,
             ]);
             if (!$ok) {
-                Response::json(null, [], [['code'=>'NOT_FOUND','message'=>'Libro no encontrado']], 404);
+                Response::json(null, [], [['code' => 'NOT_FOUND', 'message' => 'Libro no encontrado']], 404);
                 return;
             }
         } catch (PDOException $e) {
             if ((int)$e->getCode() === 23000 || str_contains($e->getMessage(), 'Duplicate')) {
-                Response::json(null, [], [['code'=>'CONFLICT','message'=>'ISBN ya existe']], 409);
+                Response::json(null, [], [['code' => 'CONFLICT', 'message' => 'ISBN ya existe']], 409);
                 return;
             }
             throw $e;
         }
 
         $this->logger->info('book.updated', ['id' => $id, 'isbn' => $isbn, 'titulo' => $titulo, 'autor' => $autor]);
-        if ($apiFailed) $this->logger->warning('external.openlibrary.partial_or_failed', ['id' => $id, 'isbn' => $isbn]);
 
         $meta = [];
-        if ($apiFailed) { $meta['external_status'] = 503; }
+        if ($apiFailed) {
+            $meta['external_status'] = 503;
+        }
 
         Response::json([
             'id' => $id,
@@ -272,7 +320,7 @@ final class BookController
         $userId = $_SERVER['AUTH_USER_ID'] ?? '00000000-0000-0000-0000-000000000001';
         $id = $_SERVER['ROUTE_PARAMS']['id'] ?? null;
         if (!$id) {
-            Response::json(null, [], [['code'=>'BAD_REQUEST','message'=>'Missing id']], 400);
+            Response::json(null, [], [['code' => 'BAD_REQUEST', 'message' => 'Missing id']], 400);
             return;
         }
 
@@ -286,7 +334,7 @@ final class BookController
         }
 
         if (!$ok) {
-            Response::json(null, [], [['code'=>'NOT_FOUND','message'=>'Libro no encontrado']], 404);
+            Response::json(null, [], [['code' => 'NOT_FOUND', 'message' => 'Libro no encontrado']], 404);
             return;
         }
 

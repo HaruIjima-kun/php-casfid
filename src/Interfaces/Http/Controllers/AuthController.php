@@ -13,9 +13,10 @@ final class AuthController
 
     public function login(Request $req): void
     {
-        $body = $req->json() ?? [];
-        $username = (string)($body['username'] ?? '');
-        $password = (string)($body['password'] ?? '');
+        $body = $req->json();
+        $username = isset($body['username']) ? (string)$body['username'] : '';
+        $password = isset($body['password']) ? (string)$body['password'] : '';
+
 
         if ($username === '' || $password === '') {
             Response::json(null, [], [
