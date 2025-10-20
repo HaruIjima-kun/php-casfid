@@ -8,25 +8,26 @@ use InvalidArgumentException;
 final class Config
 {
     /** @var array<string,mixed> */
-    private array $env = [];
+    private array $env;
 
     public function __construct(mixed $env = null)
     {
-        if (is_array($env)) {
-            $this->env = $env;
-            return;
-        }
-        // Fallback: entorno del proceso
-        $this->env = is_array($_ENV) ? $_ENV : [];
+        // Para PHPStan, evitamos checks redundantes: asumimos $_ENV es array
+        $this->env = is_array($env) ? $env : $_ENV;
     }
 
     public function get(string $key, ?string $default = null): ?string
     {
-        $value = $this->env[$key] ?? getenv($key);
-        if ($value === false || $value === null) {
+        if (array_key_exists($key, $this->env)) {
+            $val = $this->env[$key];
+            return is_scalar($val) ? (string)$val : $default;
+        }
+
+        $g = getenv($key); // string|false
+        if ($g === false) {
             return $default;
         }
-        return is_scalar($value) ? (string)$value : $default;
+        return $g;
     }
 
     /**

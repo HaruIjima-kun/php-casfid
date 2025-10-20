@@ -6,46 +6,49 @@ namespace App\Infrastructure\Http;
 final class Response
 {
     /** @var array<string,string> */
-    private static array $emitted = [];
+    private static array $headers = [];
+
+    public static function reset(): void
+    {
+        while (ob_get_level() > 0) { @ob_end_clean(); }
+        self::$headers = [];
+    }
 
     public static function header(string $name, string $value): void
     {
-        // Emite para entornos web y guarda copia para CLI/tests
-        @header($name . ': ' . $value, true);
-        self::$emitted[strtolower($name)] = $value;
+        self::$headers[strtolower($name)] = $value;
+        if (PHP_SAPI !== 'cli' && !headers_sent()) {
+            header($name . ': ' . $value, true);
+        }
+    }
+
+    /** @return array<string,string> */
+    public static function headers(): array
+    {
+        return self::$headers;
     }
 
     public static function getHeader(string $name): ?string
     {
-        $k = strtolower($name);
-        return self::$emitted[$k] ?? null;
-    }
-
-    /** Limpia cabeceras almacenadas (para tests entre “peticiones”) */
-    public static function reset(): void
-    {
-        self::$emitted = [];
+        return self::$headers[strtolower($name)] ?? null;
     }
 
     /**
-     * @param mixed $data
-     * @param array<string,mixed> $meta
-     * @param array<int,array<string,mixed>>|null $errors
+     * @param array<int|string, mixed>|null $data
+     * @param array<string, mixed>|null $meta
+     * @param array<int, array{code:string, message:string, details?:mixed}>|null $errors
      */
-    public static function json($data, array $meta = [], ?array $errors = null, int $status = 200): void
+    public static function json(?array $data, ?array $meta = [], ?array $errors = null, int $status = 200): void
     {
         http_response_code($status);
-
-        if (!isset($meta['request_id']) && isset($_SERVER['HTTP_X_REQUEST_ID'])) {
-            $meta['request_id'] = (string)$_SERVER['HTTP_X_REQUEST_ID'];
-        }
-
         self::header('Content-Type', 'application/json; charset=utf-8');
 
-        echo json_encode([
+        $payload = [
             'data'   => $data,
-            'meta'   => $meta,
+            'meta'   => $meta ?? [],
             'errors' => $errors,
-        ], JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES);
+        ];
+
+        echo json_encode($payload, JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES);
     }
 }

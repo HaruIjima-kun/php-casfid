@@ -9,20 +9,18 @@ use App\Infrastructure\Http\Response;
 use App\Infrastructure\Persistence\MySqlBookRepository;
 use App\Domain\Entity\Book;
 use PDO;
-use Redis;
 use InvalidArgumentException;
 
 final class BookController
 {
+    private MySqlBookRepository $repo;
+
     public function __construct(
         private Config $config,
-        private PDO $pdo,
-        private ?Redis $redis = null
+        PDO $pdo
     ) {
         $this->repo = new MySqlBookRepository($pdo);
     }
-
-    private MySqlBookRepository $repo;
 
     public function index(Request $req): void
     {
@@ -34,11 +32,17 @@ final class BookController
         $page    = (int)($req->query('page') ?? '1');
         $perPage = (int)($req->query('per_page') ?? ($this->config->get('PAGINATION_PER_PAGE', '20') ?? '20'));
 
-        $result = $this->repo->search($q, $titulo, $autor, $sort, $dir, $page, $perPage);
+        $result = $this->repo->search(
+            is_string($q) ? $q : null,
+            is_string($titulo) ? $titulo : null,
+            is_string($autor) ? $autor : null,
+            is_string($sort) ? $sort : 'titulo',
+            is_string($dir) ? $dir : 'asc',
+            $page,
+            $perPage
+        );
 
-        $data = array_map(function (Book $b): array {
-            return $this->present($b);
-        }, $result['items']);
+        $data = array_map(fn(Book $b) => $this->present($b), $result['items']);
 
         Response::json(
             $data,
@@ -46,8 +50,8 @@ final class BookController
                 'page'      => $page,
                 'per_page'  => $perPage,
                 'total'     => $result['total'],
-                'sort'      => $sort,
-                'direction' => $dir,
+                'sort'      => is_string($sort) ? $sort : 'titulo',
+                'direction' => is_string($dir) ? $dir : 'asc',
                 'request_id'=> $_SERVER['HTTP_X_REQUEST_ID'] ?? null,
             ]
         );
@@ -84,20 +88,20 @@ final class BookController
             return;
         }
 
-        if ($this->repo->findByIsbn($json['isbn'])) {
+        if ($this->repo->findByIsbn((string)$json['isbn'])) {
             http_response_code(409);
             Response::json(null, [], [[ 'code'=>'CONFLICT','message'=>'ISBN ya existe' ]], 409);
             return;
         }
 
         $created = $this->repo->create([
-            'titulo'            => $json['titulo'],
-            'autor'             => $json['autor'],
-            'isbn'              => $json['isbn'],
-            'anio_publicacion'  => $json['anio_publicacion'] ?? null,
-            'descripcion'       => $json['descripcion'] ?? null,
-            'portada_url'       => $json['portada_url'] ?? null,
-            'portada_path'      => $json['portada_path'] ?? null,
+            'titulo'            => (string)$json['titulo'],
+            'autor'             => (string)$json['autor'],
+            'isbn'              => (string)$json['isbn'],
+            'anio_publicacion'  => isset($json['anio_publicacion']) ? (int)$json['anio_publicacion'] : null,
+            'descripcion'       => isset($json['descripcion']) ? (string)$json['descripcion'] : null,
+            'portada_url'       => isset($json['portada_url']) ? (string)$json['portada_url'] : null,
+            'portada_path'      => isset($json['portada_path']) ? (string)$json['portada_path'] : null,
         ]);
 
         Response::json($this->present($created), ['request_id'=>$_SERVER['HTTP_X_REQUEST_ID'] ?? null], null, 201);
@@ -128,8 +132,7 @@ final class BookController
             return;
         }
 
-        // Si cambia ISBN y ya existe otro, 409
-        if (isset($json['isbn']) && $json['isbn'] !== $book->isbn()) {
+        if (isset($json['isbn']) && is_string($json['isbn']) && $json['isbn'] !== $book->isbn()) {
             $exists = $this->repo->findByIsbn($json['isbn']);
             if ($exists && $exists->id() !== $book->id()) {
                 http_response_code(409);
@@ -139,13 +142,13 @@ final class BookController
         }
 
         $updated = $this->repo->update($id, [
-            'titulo'            => $json['titulo']            ?? $book->titulo(),
-            'autor'             => $json['autor']             ?? $book->autor(),
-            'isbn'              => $json['isbn']              ?? $book->isbn(),
-            'anio_publicacion'  => $json['anio_publicacion']  ?? $book->anioPublicacion(),
-            'descripcion'       => $json['descripcion']       ?? $book->descripcion(),
-            'portada_url'       => $json['portada_url']       ?? $book->portadaUrl(),
-            'portada_path'      => $json['portada_path']      ?? $book->portadaPath(),
+            'titulo'            => isset($json['titulo']) ? (string)$json['titulo'] : $book->titulo(),
+            'autor'             => isset($json['autor']) ? (string)$json['autor'] : $book->autor(),
+            'isbn'              => isset($json['isbn']) ? (string)$json['isbn'] : $book->isbn(),
+            'anio_publicacion'  => array_key_exists('anio_publicacion', $json) ? (int)$json['anio_publicacion'] : $book->anioPublicacion(),
+            'descripcion'       => array_key_exists('descripcion', $json) ? (string)$json['descripcion'] : $book->descripcion(),
+            'portada_url'       => array_key_exists('portada_url', $json) ? (string)$json['portada_url'] : $book->portadaUrl(),
+            'portada_path'      => array_key_exists('portada_path', $json) ? (string)$json['portada_path'] : $book->portadaPath(),
         ]);
 
         Response::json($this->present($updated), ['request_id'=>$_SERVER['HTTP_X_REQUEST_ID'] ?? null]);

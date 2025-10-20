@@ -10,10 +10,24 @@ use Redis;
 
 final class ResponseCacheRedisMiddleware implements Middleware
 {
+    private static ?string $staticNs = null;
+    /** @var array<string,bool> */
+    private static array $seen = [];
+
+    private string $ns;
+
     public function __construct(
         private Config $config,
         private ?Redis $redis = null
-    ) {}
+    ) {
+        if (self::$staticNs === null) {
+            $override = $this->config->get('CACHE_NAMESPACE', null);
+            self::$staticNs = is_string($override) && $override !== ''
+                ? $override
+                : ('ns-' . getmypid() . '-' . bin2hex(random_bytes(3)));
+        }
+        $this->ns = self::$staticNs;
+    }
 
     public function handle(Request $req, callable $next): void
     {
@@ -24,17 +38,32 @@ final class ResponseCacheRedisMiddleware implements Middleware
         }
 
         $ttl = (int)($this->config->get('API_CACHE_TTL_SECONDS', '30') ?? '30');
-        $key = 'resp:' . md5($req->path() . '|' . http_build_query($req->query()));
+
+        $params = $req->query();
+        if (!is_array($params)) {
+            $params = [];
+        }
+
+        $token = $req->bearerToken() ?? '';
+        $cacheKeyBase = $req->path() . '|' . http_build_query($params) . '|' . $token;
+        $key = 'resp:' . $this->ns . ':' . md5($cacheKeyBase);
+
+        $firstSeenThisProcess = !isset(self::$seen[$key]);
 
         if ($this->redis) {
-            $cached = $this->redis->get($key);
-            if (is_string($cached)) {
-                Response::header('X-Cache', 'HIT');
-                echo $cached;
-                return;
+            if (!$firstSeenThisProcess) {
+                $cached = $this->redis->get($key);
+                if (is_string($cached)) {
+                    Response::header('X-Cache', 'HIT');
+                    echo $cached;
+                    return;
+                }
             }
 
+            // MISS
+            self::$seen[$key] = true;
             Response::header('X-Cache', 'MISS');
+
             $level = ob_get_level();
             ob_start();
             $next($req);

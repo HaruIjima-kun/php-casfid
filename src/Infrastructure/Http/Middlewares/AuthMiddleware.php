@@ -8,44 +8,45 @@ use App\Infrastructure\Http\Response;
 use App\Infrastructure\Config\Config;
 use App\Infrastructure\Security\Jwt;
 
-final class AuthMiddleware
+final class AuthMiddleware implements Middleware
 {
-    public function __construct(private Config $config) {}
+    /** @var array<int,string> */
+    private array $roles;
 
     /**
-     * Valida JWT del header Authorization.
-     * Si $roles no es null, exige que el claim 'role' esté dentro de $roles.
+     * @param array<int,string> $roles
      */
-    /** @param string[] $roles */
-    public function requireAuth(Request $req, array $roles = ['usuario','admin']): void
+    public function __construct(private Config $config, array $roles = [])
     {
-        $auth = $req->header('Authorization', '');
-        if (!$auth || stripos($auth, 'Bearer ') !== 0) {
-            Response::json(null, [], [
-                ['code' => 'UNAUTHORIZED', 'message' => 'Missing Bearer token']
-            ], 401);
-            exit;
+        $this->roles = $roles;
+    }
+
+    public function handle(Request $req, callable $next): void
+    {
+        $token = $req->bearerToken();
+        if (!$token) {
+            http_response_code(401);
+            Response::json(null, [], [[ 'code'=>'UNAUTHORIZED','message'=>'Missing token' ]], 401);
+            return;
         }
 
-        $jwt = trim(substr($auth, 7));
-        try {
-            $payload = Jwt::decode($jwt, $this->config->require('JWT_SECRET'));
-        } catch (\Throwable $e) {
-            Response::json(null, [], [
-                ['code' => 'UNAUTHORIZED', 'message' => 'Invalid token']
-            ], 401);
-            exit;
+        $secret  = $this->config->require('JWT_SECRET');
+        $payload = Jwt::decode($token, $secret);
+        if (!is_array($payload)) {
+            http_response_code(401);
+            Response::json(null, [], [[ 'code'=>'UNAUTHORIZED','message'=>'Invalid token' ]], 401);
+            return;
         }
 
-        if ($roles !== null && isset($payload['role']) && !in_array($payload['role'], $roles, true)) {
-            Response::json(null, [], [
-                ['code' => 'FORBIDDEN', 'message' => 'Insufficient role']
-            ], 403);
-            exit;
+        if ($this->roles !== []) {
+            $role = $payload['role'] ?? null;
+            if (!is_string($role) || !in_array($role, $this->roles, true)) {
+                http_response_code(403);
+                Response::json(null, [], [[ 'code'=>'FORBIDDEN','message'=>'Insufficient role' ]], 403);
+                return;
+            }
         }
 
-        // Expone el usuario en el contexto de la request
-        $_SERVER['AUTH_USER_ID'] = (string)($payload['sub'] ?? '');
-        $_SERVER['AUTH_ROLE']    = (string)($payload['role'] ?? '');
+        $next($req);
     }
 }
