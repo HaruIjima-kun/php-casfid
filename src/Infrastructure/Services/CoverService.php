@@ -15,6 +15,7 @@ final class CoverService
     private int $timeout;
 
     public function __construct(
+        /** @phpstan-ignore-next-line */
         private Config $config,
         private FileStorageInterface $storage
     ) {

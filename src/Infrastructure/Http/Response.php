@@ -5,25 +5,47 @@ namespace App\Infrastructure\Http;
 
 final class Response
 {
+    /** @var array<string,string> */
+    private static array $emitted = [];
+
+    public static function header(string $name, string $value): void
+    {
+        // Emite para entornos web y guarda copia para CLI/tests
+        @header($name . ': ' . $value, true);
+        self::$emitted[strtolower($name)] = $value;
+    }
+
+    public static function getHeader(string $name): ?string
+    {
+        $k = strtolower($name);
+        return self::$emitted[$k] ?? null;
+    }
+
+    /** Limpia cabeceras almacenadas (para tests entre “peticiones”) */
+    public static function reset(): void
+    {
+        self::$emitted = [];
+    }
+
     /**
-     * @param array<string, mixed> $meta
-     * @param array<int, array{code:string, message:string, details?:array<string,mixed>, trace?:string[]}>|null $errors
+     * @param mixed $data
+     * @param array<string,mixed> $meta
+     * @param array<int,array<string,mixed>>|null $errors
      */
-    public static function json(mixed $data = null, array $meta = [], ?array $errors = null, int $status = 200): void
+    public static function json($data, array $meta = [], ?array $errors = null, int $status = 200): void
     {
         http_response_code($status);
-        header('Content-Type: application/json; charset=utf-8');
 
-        // Si el middleware ya puso X-Request-Id, lo incluimos en meta automáticamente
-        $rid = $_SERVER['X_REQUEST_ID'] ?? null;
-        if ($rid && !isset($meta['request_id'])) {
-            $meta['request_id'] = $rid;
+        if (!isset($meta['request_id']) && isset($_SERVER['HTTP_X_REQUEST_ID'])) {
+            $meta['request_id'] = (string)$_SERVER['HTTP_X_REQUEST_ID'];
         }
+
+        self::header('Content-Type', 'application/json; charset=utf-8');
 
         echo json_encode([
             'data'   => $data,
             'meta'   => $meta,
             'errors' => $errors,
-        ], JSON_UNESCAPED_UNICODE);
+        ], JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES);
     }
 }

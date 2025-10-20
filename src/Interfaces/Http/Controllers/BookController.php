@@ -3,439 +3,249 @@ declare(strict_types=1);
 
 namespace App\Interfaces\Http\Controllers;
 
-use App\Domain\ValueObject\Isbn;
 use App\Infrastructure\Config\Config;
 use App\Infrastructure\Http\Request;
 use App\Infrastructure\Http\Response;
-use App\Infrastructure\Logging\Logger;
-use App\Infrastructure\Persistence\PdoConnection;
 use App\Infrastructure\Persistence\MySqlBookRepository;
-use App\Infrastructure\External\OpenLibraryClient;
-
-use App\Infrastructure\Cache\CacheInterface;
-use App\Infrastructure\Cache\RedisClientFactory;
-use App\Infrastructure\Cache\RedisCache;
-use App\Infrastructure\Cache\CacheInvalidator;
-
-use App\Infrastructure\Storage\LocalFileStorage;
-use App\Infrastructure\Services\CoverService;
-
-use App\Shared\Uuid;
-use App\Shared\Clock;
-use PDOException;
-use Throwable;
+use App\Domain\Entity\Book;
+use PDO;
+use Redis;
+use InvalidArgumentException;
 
 final class BookController
 {
-    private MySqlBookRepository $repo;
-    private Logger $logger;
-
-    /** @var CacheInterface|null */
-    private ?CacheInterface $cache = null;
-
-    /** @var CacheInvalidator|null */
-    private ?CacheInvalidator $invalidator = null;
-
-    /** Covers **/
-    private ?CoverService $coverService = null;
-    private bool $storeCovers = false;
-
-    public function __construct(private Config $config)
-    {
-        $pdo = (new PdoConnection($config))->pdo();
+    public function __construct(
+        private Config $config,
+        private PDO $pdo,
+        private ?Redis $redis = null
+    ) {
         $this->repo = new MySqlBookRepository($pdo);
-        $this->logger = new Logger($config);
-
-        // Redis (caché OpenLibrary + invalidación caché de respuestas)
-        $r = RedisClientFactory::make($config);
-        if ($r !== null) {
-            $this->cache = new RedisCache($r);
-            $this->invalidator = new CacheInvalidator($r);
-        }
-
-        // Portadas locales
-        $this->storeCovers = strtolower($this->config->get('STORE_COVERS', 'true') ?? 'true') === 'true';
-        if ($this->storeCovers) {
-            $this->coverService = new CoverService($this->config, new LocalFileStorage());
-        }
     }
 
-    /**
-     * GET /api/v1/libros
-     */
+    private MySqlBookRepository $repo;
+
     public function index(Request $req): void
     {
-        $q = trim((string)$req->queryParam('q', ''));
-        $titulo = trim((string)$req->queryParam('titulo', ''));
-        $autor = trim((string)$req->queryParam('autor', ''));
-        $sort = (string)$req->queryParam('sort', 'titulo');
-        $direction = (string)$req->queryParam('direction', 'asc');
-        $page = (int)$req->queryParam('page', '1');
-        $perPage = (int)$req->queryParam('per_page', (string)($this->config->get('PAGINATION_PER_PAGE', '20') ?? '20'));
+        $q       = $req->query('q');
+        $titulo  = $req->query('titulo');
+        $autor   = $req->query('autor');
+        $sort    = $req->query('sort') ?? 'titulo';
+        $dir     = $req->query('direction') ?? 'asc';
+        $page    = (int)($req->query('page') ?? '1');
+        $perPage = (int)($req->query('per_page') ?? ($this->config->get('PAGINATION_PER_PAGE', '20') ?? '20'));
 
-        $result = $this->repo->search(
-            $q !== '' ? $q : null,
-            $titulo !== '' ? $titulo : null,
-            $autor !== '' ? $autor : null,
-            $sort,
-            strtolower($direction) === 'desc' ? 'desc' : 'asc',
-            $page,
-            $perPage
-        );
+        $result = $this->repo->search($q, $titulo, $autor, $sort, $dir, $page, $perPage);
+
+        $data = array_map(function (Book $b): array {
+            return $this->present($b);
+        }, $result['items']);
 
         Response::json(
-            $result['items'],
+            $data,
             [
-                'page' => $page,
-                'per_page' => $perPage,
-                'total' => $result['total'],
-                'sort' => $sort,
-                'direction' => strtolower($direction) === 'desc' ? 'desc' : 'asc',
-                'request_id' => $req->id(),
+                'page'      => $page,
+                'per_page'  => $perPage,
+                'total'     => $result['total'],
+                'sort'      => $sort,
+                'direction' => $dir,
+                'request_id'=> $_SERVER['HTTP_X_REQUEST_ID'] ?? null,
             ]
         );
     }
 
-    /**
-     * GET /api/v1/libros/{id}
-     */
     public function show(Request $req): void
     {
-        $id = $_SERVER['ROUTE_PARAMS']['id'] ?? null;
+        $id = $req->route('id');
         if (!$id) {
-            Response::json(null, ['request_id' => $req->id()], [['code' => 'BAD_REQUEST', 'message' => 'Missing id']], 400);
+            http_response_code(400);
+            Response::json(null, [], [[ 'code'=>'BAD_REQUEST','message'=>'Missing id' ]], 400);
             return;
         }
 
         $book = $this->repo->findById($id);
-        if (!$book || $book['deleted_at'] !== null) {
-            Response::json(null, ['request_id' => $req->id()], [['code' => 'NOT_FOUND', 'message' => 'Libro no encontrado']], 404);
+        if (!$book) {
+            http_response_code(404);
+            Response::json(null, [], [[ 'code'=>'NOT_FOUND','message'=>'Book not found' ]], 404);
             return;
         }
 
-        Response::json($book, ['request_id' => $req->id()]);
+        Response::json($this->present($book), ['request_id'=>$_SERVER['HTTP_X_REQUEST_ID'] ?? null]);
     }
 
-    /**
-     * POST /api/v1/libros
-     */
     public function store(Request $req): void
     {
-        $userId = $_SERVER['AUTH_USER_ID'] ?? '00000000-0000-0000-0000-000000000001';
-        $body = $req->json();
-
-        $titulo = trim((string)($body['titulo'] ?? ''));
-        $autor = trim((string)($body['autor'] ?? ''));
-        $isbnIn = trim((string)($body['isbn'] ?? ''));
-        $anio = isset($body['anio_publicacion']) && $body['anio_publicacion'] !== ''
-            ? (int)$body['anio_publicacion']
-            : null;
-
-        $errors = [];
-        if ($titulo === '' || mb_strlen($titulo) > 150) $errors['titulo'] = 'obligatorio (<=150)';
-        if ($autor === '' || mb_strlen($autor) > 100) $errors['autor'] = 'obligatorio (<=100)';
+        $json = $req->json();
 
         try {
-            $isbn = (new Isbn($isbnIn))->value();
-        } catch (Throwable) {
-            $errors['isbn'] = 'inválido';
-            $isbn = $isbnIn;
-        }
-
-        if ($anio !== null) {
-            $max = (int)date('Y') + 3;
-            if ($anio > $max) $errors['anio_publicacion'] = "debe ser <= {$max}";
-        }
-
-        if ($errors) {
-            Response::json(null, ['request_id' => $req->id()], [['code' => 'VALIDATION_ERROR', 'message' => 'Errores de validación', 'details' => $errors]], 400);
+            $this->validate($json, true);
+        } catch (InvalidArgumentException $e) {
+            http_response_code(422);
+            Response::json(null, [], [[ 'code'=>'VALIDATION_ERROR','message'=>$e->getMessage() ]], 422);
             return;
         }
 
-        // Duplicado
-        if ($this->repo->findByIsbn($isbn)) {
-            Response::json(null, ['request_id' => $req->id()], [['code' => 'CONFLICT', 'message' => 'ISBN ya existe']], 409);
+        if ($this->repo->findByIsbn($json['isbn'])) {
+            http_response_code(409);
+            Response::json(null, [], [[ 'code'=>'CONFLICT','message'=>'ISBN ya existe' ]], 409);
             return;
         }
 
-        // Enriquecimiento externo
-        $descripcion = null;
-        $portadaUrl = null;
-        $portadaPath = null;
-        $apiFailed = false;
+        $created = $this->repo->create([
+            'titulo'            => $json['titulo'],
+            'autor'             => $json['autor'],
+            'isbn'              => $json['isbn'],
+            'anio_publicacion'  => $json['anio_publicacion'] ?? null,
+            'descripcion'       => $json['descripcion'] ?? null,
+            'portada_url'       => $json['portada_url'] ?? null,
+            'portada_path'      => $json['portada_path'] ?? null,
+        ]);
 
-        try {
-            $client = new OpenLibraryClient($this->config, $this->cache);
-            $bk = $isbn ? $client->getByIsbn($isbn) : [];
-            if ($bk) {
-                $descripcion = $bk['description']['value'] ?? ($bk['description'] ?? null);
-                if (isset($bk['cover']['large'])) $portadaUrl = $bk['cover']['large'];
-                elseif (isset($bk['cover']['medium'])) $portadaUrl = $bk['cover']['medium'];
-                elseif (isset($bk['cover']['small'])) $portadaUrl = $bk['cover']['small'];
-
-                if ($anio === null && isset($bk['publish_date']) && preg_match('/(\d{4})/', $bk['publish_date'], $m)) {
-                    $anio = (int)$m[1];
-                }
-                if ($autor === '' && !empty($bk['authors'][0]['name'])) {
-                    $autor = (string)$bk['authors'][0]['name'];
-                }
-            }
-        } catch (Throwable) {
-            $apiFailed = true;
-            $this->logger->warning('external.openlibrary.partial_or_failed', ['isbn' => $isbn, 'titulo' => $titulo, 'autor' => $autor]);
-        }
-
-        // Descarga de portada local si procede
-        if ($this->storeCovers && $this->coverService && $portadaUrl) {
-            try {
-                $dl = $this->coverService->download($portadaUrl, $isbn);
-                if ($dl !== null) {
-                    $portadaPath = $dl;
-                }
-            } catch (Throwable $e) {
-                $this->logger->warning('cover.download.failed', ['isbn' => $isbn, 'error' => $e->getMessage()]);
-            }
-        }
-
-        $id = Uuid::v4();
-
-        try {
-            $this->repo->create([
-                'id' => $id,
-                'titulo' => $titulo,
-                'autor' => $autor,
-                'isbn' => $isbn,
-                'anio_publicacion' => $anio,
-                'descripcion' => $descripcion,
-                'portada_url' => $portadaUrl,
-                'portada_path' => $portadaPath,
-                'created_at' => Clock::now(),
-                'created_by' => $userId,
-            ]);
-        } catch (PDOException $e) {
-            if ((int)$e->getCode() === 23000 || str_contains($e->getMessage(), 'Duplicate')) {
-                Response::json(null, ['request_id' => $req->id()], [['code' => 'CONFLICT', 'message' => 'ISBN ya existe']], 409);
-                return;
-            }
-            throw $e;
-        }
-
-        $this->logger->info('book.created', ['id' => $id, 'isbn' => $isbn, 'titulo' => $titulo, 'autor' => $autor]);
-
-        // Invalidación de caché de respuestas
-        if ($this->invalidator) {
-            $this->invalidator->invalidateAllListEndpoints();
-            $this->invalidator->invalidateBook($id);
-        }
-
-        $meta = ['request_id' => $req->id()];
-        if ($apiFailed) {
-            $meta['external_status'] = 503;
-        }
-
-        Response::json([
-            'id' => $id,
-            'titulo' => $titulo,
-            'autor' => $autor,
-            'isbn' => $isbn,
-            'anio_publicacion' => $anio,
-            'descripcion' => $descripcion,
-            'portada_url' => $portadaUrl,
-            'portada_path' => $portadaPath,
-        ], $meta, null, 201);
+        Response::json($this->present($created), ['request_id'=>$_SERVER['HTTP_X_REQUEST_ID'] ?? null], null, 201);
     }
 
-    /**
-     * PUT /api/v1/libros/{id}
-     */
     public function update(Request $req): void
     {
-        $userId = $_SERVER['AUTH_USER_ID'] ?? '00000000-0000-0000-0000-000000000001';
-        $body = $req->json();
-
-        $id = $_SERVER['ROUTE_PARAMS']['id'] ?? null;
+        $id = $req->route('id');
         if (!$id) {
-            Response::json(null, ['request_id' => $req->id()], [['code' => 'BAD_REQUEST', 'message' => 'Missing id']], 400);
+            http_response_code(400);
+            Response::json(null, [], [[ 'code'=>'BAD_REQUEST','message'=>'Missing id' ]], 400);
             return;
         }
 
-        $exists = $this->repo->findById($id);
-        if (!$exists || $exists['deleted_at'] !== null) {
-            Response::json(null, ['request_id' => $req->id()], [['code' => 'NOT_FOUND', 'message' => 'Libro no encontrado']], 404);
+        $book = $this->repo->findById($id);
+        if (!$book) {
+            http_response_code(404);
+            Response::json(null, [], [[ 'code'=>'NOT_FOUND','message'=>'Book not found' ]], 404);
             return;
         }
 
-        $titulo = trim((string)($body['titulo'] ?? $exists['titulo']));
-        $autor = trim((string)($body['autor'] ?? $exists['autor']));
-        $isbnIn = trim((string)($body['isbn'] ?? $exists['isbn']));
-        $anio = array_key_exists('anio_publicacion', $body)
-            ? (($body['anio_publicacion'] === '' || $body['anio_publicacion'] === null) ? null : (int)$body['anio_publicacion'])
-            : ($exists['anio_publicacion'] !== null ? (int)$exists['anio_publicacion'] : null);
-
-        $errors = [];
-        if ($titulo === '' || mb_strlen($titulo) > 150) $errors['titulo'] = 'obligatorio (<=150)';
-        if ($autor === '' || mb_strlen($autor) > 100) $errors['autor'] = 'obligatorio (<=100)';
+        $json = $req->json();
         try {
-            $isbn = (new Isbn($isbnIn))->value();
-        } catch (Throwable) {
-            $errors['isbn'] = 'inválido';
-            $isbn = $isbnIn;
-        }
-        if ($anio !== null) {
-            $max = (int)date('Y') + 3;
-            if ($anio > $max) $errors['anio_publicacion'] = "debe ser <= {$max}";
-        }
-        if ($errors) {
-            Response::json(null, ['request_id' => $req->id()], [['code' => 'VALIDATION_ERROR', 'message' => 'Errores de validación', 'details' => $errors]], 400);
+            $this->validate($json, false);
+        } catch (InvalidArgumentException $e) {
+            http_response_code(422);
+            Response::json(null, [], [[ 'code'=>'VALIDATION_ERROR','message'=>$e->getMessage() ]], 422);
             return;
         }
 
-        $descripcion = $exists['descripcion'];
-        $portadaUrl = $exists['portada_url'];
-        $portadaPath = $exists['portada_path'] ?? null;
-        $apiFailed = false;
-
-        // ¿forzar refresco?
-        $refreshCover = (string)$req->queryParam('refresh_cover', '0') === '1';
-
-        $needsEnrichment = ($descripcion === null)
-            || ($portadaUrl === null)
-            || ($isbn !== $exists['isbn'])
-            || ($titulo !== $exists['titulo'])
-            || ($autor !== $exists['autor']);
-
-        if ($needsEnrichment) {
-            try {
-                $client = new OpenLibraryClient($this->config, $this->cache);
-                $bk = $isbn ? $client->getByIsbn($isbn) : [];
-                if ($bk) {
-                    if ($descripcion === null) {
-                        $descripcion = $bk['description']['value'] ?? ($bk['description'] ?? null);
-                    }
-                    if ($portadaUrl === null) {
-                        if (isset($bk['cover']['large'])) $portadaUrl = $bk['cover']['large'];
-                        elseif (isset($bk['cover']['medium'])) $portadaUrl = $bk['cover']['medium'];
-                        elseif (isset($bk['cover']['small'])) $portadaUrl = $bk['cover']['small'];
-                    }
-                    if ($anio === null && isset($bk['publish_date']) && preg_match('/(\d{4})/', $bk['publish_date'], $m)) {
-                        $anio = (int)$m[1];
-                    }
-                    if ($autor === '' && !empty($bk['authors'][0]['name'])) $autor = (string)$bk['authors'][0]['name'];
-                }
-            } catch (Throwable) {
-                $apiFailed = true;
-                $this->logger->warning('external.openlibrary.partial_or_failed', ['isbn' => $isbn, 'id' => $id]);
-            }
-        }
-
-        // Refresh portada local si procede
-        if ($this->storeCovers && $this->coverService) {
-            $shouldRedownload = $refreshCover;
-
-            if (!$shouldRedownload && $portadaUrl) {
-                try {
-                    $alive = $this->coverService->isRemoteAlive($portadaUrl);
-                    $shouldRedownload = !$alive;
-                } catch (Throwable) {
-                    $shouldRedownload = true;
-                }
-            }
-
-            if ($shouldRedownload && $portadaUrl) {
-                try {
-                    $newPath = $this->coverService->download($portadaUrl, $isbn);
-                    if ($newPath !== null) {
-                        $portadaPath = $newPath;
-                    }
-                } catch (Throwable $e) {
-                    $this->logger->warning('cover.download.failed', ['isbn' => $isbn, 'id' => $id, 'error' => $e->getMessage()]);
-                }
-            }
-        }
-
-        try {
-            $ok = $this->repo->update($id, [
-                'titulo' => $titulo,
-                'autor' => $autor,
-                'isbn' => $isbn,
-                'anio_publicacion' => $anio,
-                'descripcion' => $descripcion,
-                'portada_url' => $portadaUrl,
-                'portada_path' => $portadaPath,
-                'updated_at' => Clock::now(),
-                'updated_by' => $userId,
-            ]);
-            if (!$ok) {
-                Response::json(null, ['request_id' => $req->id()], [['code' => 'NOT_FOUND', 'message' => 'Libro no encontrado']], 404);
+        // Si cambia ISBN y ya existe otro, 409
+        if (isset($json['isbn']) && $json['isbn'] !== $book->isbn()) {
+            $exists = $this->repo->findByIsbn($json['isbn']);
+            if ($exists && $exists->id() !== $book->id()) {
+                http_response_code(409);
+                Response::json(null, [], [[ 'code'=>'CONFLICT','message'=>'ISBN ya existe' ]], 409);
                 return;
             }
-        } catch (PDOException $e) {
-            if ((int)$e->getCode() === 23000 || str_contains($e->getMessage(), 'Duplicate')) {
-                Response::json(null, ['request_id' => $req->id()], [['code' => 'CONFLICT', 'message' => 'ISBN ya existe']], 409);
-                return;
-            }
-            throw $e;
         }
 
-        $this->logger->info('book.updated', ['id' => $id, 'isbn' => $isbn, 'titulo' => $titulo, 'autor' => $autor]);
+        $updated = $this->repo->update($id, [
+            'titulo'            => $json['titulo']            ?? $book->titulo(),
+            'autor'             => $json['autor']             ?? $book->autor(),
+            'isbn'              => $json['isbn']              ?? $book->isbn(),
+            'anio_publicacion'  => $json['anio_publicacion']  ?? $book->anioPublicacion(),
+            'descripcion'       => $json['descripcion']       ?? $book->descripcion(),
+            'portada_url'       => $json['portada_url']       ?? $book->portadaUrl(),
+            'portada_path'      => $json['portada_path']      ?? $book->portadaPath(),
+        ]);
 
-        // Invalidación de caché de respuestas
-        if ($this->invalidator) {
-            $this->invalidator->invalidateAllListEndpoints();
-            $this->invalidator->invalidateBook($id);
+        Response::json($this->present($updated), ['request_id'=>$_SERVER['HTTP_X_REQUEST_ID'] ?? null]);
+    }
+
+    public function destroy(Request $req): void
+    {
+        $id = $req->route('id');
+        if (!$id) {
+            http_response_code(400);
+            Response::json(null, [], [[ 'code'=>'BAD_REQUEST','message'=>'Missing id' ]], 400);
+            return;
         }
 
-        $meta = ['request_id' => $req->id()];
-        if ($apiFailed) {
-            $meta['external_status'] = 503;
+        $book = $this->repo->findById($id);
+        if (!$book) {
+            http_response_code(404);
+            Response::json(null, [], [[ 'code'=>'NOT_FOUND','message'=>'Book not found' ]], 404);
+            return;
         }
 
-        Response::json([
-            'id' => $id,
-            'titulo' => $titulo,
-            'autor' => $autor,
-            'isbn' => $isbn,
-            'anio_publicacion' => $anio,
-            'descripcion' => $descripcion,
-            'portada_url' => $portadaUrl,
-            'portada_path' => $portadaPath,
-        ], $meta, null, 200);
+        $soft = filter_var((string)$this->config->get('DELETE_SOFT', 'true'), FILTER_VALIDATE_BOOLEAN);
+        if ($soft) {
+            $this->repo->softDelete($id, '00000000-0000-0000-0000-000000000001');
+        } else {
+            $this->repo->hardDelete($id);
+        }
+
+        Response::json(['deleted' => true], ['request_id'=>$_SERVER['HTTP_X_REQUEST_ID'] ?? null], null, 200);
     }
 
     /**
-     * DELETE /api/v1/libros/{id}
+     * @param array<string,mixed> $data
      */
-    public function destroy(Request $req): void
+    private function validate(array $data, bool $creating): void
     {
-        $userId = $_SERVER['AUTH_USER_ID'] ?? '00000000-0000-0000-0000-000000000001';
-        $id = $_SERVER['ROUTE_PARAMS']['id'] ?? null;
-        if (!$id) {
-            Response::json(null, ['request_id' => $req->id()], [['code' => 'BAD_REQUEST', 'message' => 'Missing id']], 400);
-            return;
+        if ($creating) {
+            foreach (['titulo','autor','isbn'] as $f) {
+                if (!isset($data[$f]) || trim((string)$data[$f]) === '') {
+                    throw new InvalidArgumentException("Campo requerido: {$f}");
+                }
+            }
         }
 
-        $mode = strtolower($this->config->get('DELETE_MODE', 'soft') ?? 'soft');
-
-        $ok = false;
-        if ($mode === 'hard') {
-            $ok = $this->repo->hardDelete($id);
-        } else {
-            $ok = $this->repo->softDelete($id, Clock::now(), $userId);
+        if (isset($data['titulo']) && mb_strlen((string)$data['titulo']) > 150) {
+            throw new InvalidArgumentException('titulo demasiado largo');
         }
-
-        if (!$ok) {
-            Response::json(null, ['request_id' => $req->id()], [['code' => 'NOT_FOUND', 'message' => 'Libro no encontrado']], 404);
-            return;
+        if (isset($data['autor']) && mb_strlen((string)$data['autor']) > 100) {
+            throw new InvalidArgumentException('autor demasiado largo');
         }
-
-        $this->logger->info('book.deleted', ['id' => $id, 'mode' => $mode]);
-
-        // Invalidación de caché de respuestas
-        if ($this->invalidator) {
-            $this->invalidator->invalidateAllListEndpoints();
-            $this->invalidator->invalidateBook($id);
+        if (isset($data['descripcion']) && mb_strlen((string)$data['descripcion']) > 2000) {
+            throw new InvalidArgumentException('descripcion demasiado larga');
         }
+        if (isset($data['isbn']) && !$this->isValidIsbn((string)$data['isbn'])) {
+            throw new InvalidArgumentException('isbn inválido');
+        }
+    }
 
-        http_response_code(204);
+    private function isValidIsbn(string $isbn): bool
+    {
+        $x = preg_replace('/[^0-9Xx]/', '', $isbn);
+        if (strlen($x) === 13) {
+            $sum = 0;
+            for ($i = 0; $i < 12; $i++) {
+                $d = (int)$x[$i];
+                $sum += ($i % 2 === 0) ? $d : $d * 3;
+            }
+            $chk = (10 - ($sum % 10)) % 10;
+            return $chk === (int)$x[12];
+        }
+        if (strlen($x) === 10) {
+            $sum = 0;
+            for ($i = 0; $i < 9; $i++) {
+                $sum += ((10 - $i) * (int)$x[$i]);
+            }
+            $chk = 11 - ($sum % 11);
+            $last = strtoupper($x[9]) === 'X' ? 10 : (int)$x[9];
+            return $chk % 11 === $last;
+        }
+        return false;
+    }
+
+    /** @return array<string,mixed> */
+    private function present(Book $b): array
+    {
+        return [
+            'id'                => $b->id(),
+            'titulo'            => $b->titulo(),
+            'autor'             => $b->autor(),
+            'isbn'              => $b->isbn(),
+            'anio_publicacion'  => $b->anioPublicacion(),
+            'descripcion'       => $b->descripcion(),
+            'portada_url'       => $b->portadaUrl(),
+            'portada_path'      => $b->portadaPath(),
+            'created_at'        => $b->createdAt(),
+            'created_by'        => $b->createdBy(),
+            'updated_at'        => $b->updatedAt(),
+            'updated_by'        => $b->updatedBy(),
+            'deleted_at'        => $b->deletedAt(),
+            'deleted_by'        => $b->deletedBy(),
+        ];
     }
 }

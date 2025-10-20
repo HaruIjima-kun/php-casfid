@@ -8,6 +8,17 @@ RUN apt-get update \
 && pecl install redis \
 && docker-php-ext-enable redis
 
+# Xdebug (solo para CLI/tests; xdebug.mode=off por defecto)
+RUN pecl install xdebug \
+    && docker-php-ext-enable xdebug
+
+# Desactivar por defecto (la función xdebug_get_headers existirá igualmente)
+RUN { \
+      echo "zend_extension=xdebug"; \
+      echo "xdebug.mode=off"; \
+      echo "xdebug.start_with_request=default"; \
+    } > /usr/local/etc/php/conf.d/docker-php-ext-xdebug.ini
+
 
 # Composer
 COPY --from=composer:2 /usr/bin/composer /usr/bin/composer

@@ -3,9 +3,8 @@ declare(strict_types=1);
 
 namespace App\Infrastructure\Persistence;
 
-use App\Domain\Entity\Book;
 use PDO;
-use PDOException;
+use App\Domain\Entity\Book;
 
 final class MySqlBookRepository
 {
@@ -15,212 +14,227 @@ final class MySqlBookRepository
     }
 
     /**
-     * Búsqueda con filtros: q (normalizado), titulo, autor, orden, paginación.
-     *
-     * @param string|null $q
-     * @param string|null $titulo
-     * @param string|null $autor
-     * @param string $sort
-     * @param string $direction
-     * @param int $page
-     * @param int $perPage
-     * @return array{items: array<array<string,mixed>>, total:int}
+     * @return array{items: array<int,Book>, total: int}
      */
     public function search(
         ?string $q,
         ?string $titulo,
         ?string $autor,
-        string  $sort = 'titulo',
-        string  $direction = 'asc',
-        int     $page = 1,
-        int     $perPage = 20
-    ): array
-    {
-        $page = max(1, $page);
-        $perPage = max(1, min(100, $perPage));
-
-        $allowedSort = ['titulo', 'autor', 'anio_publicacion', 'created_at'];
-        if (!in_array($sort, $allowedSort, true)) {
-            $sort = 'titulo';
-        }
-        $direction = strtolower($direction) === 'desc' ? 'desc' : 'asc';
-
+        string $sort,
+        string $direction,
+        int $page,
+        int $perPage
+    ): array {
         $where = ['deleted_at IS NULL'];
         $params = [];
 
-        // Buscador normalizado (depende de columnas generadas titulo_norm/autor_norm)
         if ($q !== null && $q !== '') {
-            $where[] = '(titulo_norm LIKE :q OR autor_norm LIKE :q)';
-            $params[':q'] = '%' . $this->normalize($q) . '%';
+            $where[] = '(LOWER(titulo_norm) LIKE :q OR LOWER(autor_norm) LIKE :q)';
+            $params[':q'] = '%' . mb_strtolower($q) . '%';
         }
         if ($titulo !== null && $titulo !== '') {
-            $where[] = 'titulo_norm LIKE :t';
-            $params[':t'] = '%' . $this->normalize($titulo) . '%';
+            $where[] = 'LOWER(titulo_norm) LIKE :titulo';
+            $params[':titulo'] = '%' . mb_strtolower($titulo) . '%';
         }
         if ($autor !== null && $autor !== '') {
-            $where[] = 'autor_norm LIKE :a';
-            $params[':a'] = '%' . $this->normalize($autor) . '%';
+            $where[] = 'LOWER(autor_norm) LIKE :autor';
+            $params[':autor'] = '%' . mb_strtolower($autor) . '%';
         }
 
-        $whereSql = implode(' AND ', $where);
-        $orderSql = "ORDER BY {$sort} {$direction}";
-        $offset = ($page - 1) * $perPage;
-        $limitSql = "LIMIT :limit OFFSET :offset";
+        $whereSql = 'WHERE ' . implode(' AND ', $where);
 
-        // Total
-        $sqlCount = "SELECT COUNT(*) AS c FROM libros WHERE {$whereSql}";
-        $stmtC = $this->pdo->prepare($sqlCount);
-        foreach ($params as $k => $v) {
-            $stmtC->bindValue($k, $v);
-        }
-        $stmtC->execute();
-        $total = (int)$stmtC->fetchColumn();
+        $allowedSort = ['titulo','autor','anio_publicacion','created_at'];
+        if (!in_array($sort, $allowedSort, true)) $sort = 'titulo';
+        $direction = strtolower($direction) === 'desc' ? 'desc' : 'asc';
 
-        // Items
-        $sql = "SELECT id, titulo, autor, isbn, anio_publicacion, descripcion, portada_url, portada_path,
-                       created_at, created_by, updated_at, updated_by, deleted_at, deleted_by
-                FROM libros
-                WHERE {$whereSql}
-                {$orderSql}
-                {$limitSql}";
+        $offset = max(0, ($page - 1) * $perPage);
+
+        $sql = "
+            SELECT id, titulo, autor, isbn, anio_publicacion, descripcion,
+                   portada_url, portada_path,
+                   created_at, created_by, updated_at, updated_by, deleted_at, deleted_by
+            FROM libros
+            $whereSql
+            ORDER BY $sort $direction
+            LIMIT :limit OFFSET :offset
+        ";
         $stmt = $this->pdo->prepare($sql);
-        foreach ($params as $k => $v) {
-            $stmt->bindValue($k, $v);
-        }
+        foreach ($params as $k => $v) { $stmt->bindValue($k, $v); }
         $stmt->bindValue(':limit', $perPage, PDO::PARAM_INT);
         $stmt->bindValue(':offset', $offset, PDO::PARAM_INT);
         $stmt->execute();
 
-        /** @var array<int, array<string,mixed>> $items */
-        $items = $stmt->fetchAll(PDO::FETCH_ASSOC);
+        $rows = $stmt->fetchAll(PDO::FETCH_ASSOC) ?: [];
+        $items = [];
+        foreach ($rows as $row) {
+            $items[] = $this->hydrate($row);
+        }
+
+        $countSql = "SELECT COUNT(1) AS c FROM libros $whereSql";
+        $countStmt = $this->pdo->prepare($countSql);
+        foreach ($params as $k => $v) { $countStmt->bindValue($k, $v); }
+        $countStmt->execute();
+        $total = (int)($countStmt->fetchColumn() ?: 0);
 
         return ['items' => $items, 'total' => $total];
     }
 
+    public function findById(string $id): ?Book
+    {
+        $stmt = $this->pdo->prepare("SELECT * FROM libros WHERE id = :id AND deleted_at IS NULL");
+        $stmt->execute([':id' => $id]);
+        $row = $stmt->fetch(PDO::FETCH_ASSOC);
+        return $row ? $this->hydrate($row) : null;
+    }
+
+    public function findByIsbn(string $isbn): ?Book
+    {
+        $stmt = $this->pdo->prepare("SELECT * FROM libros WHERE isbn = :isbn AND deleted_at IS NULL");
+        $stmt->execute([':isbn' => $isbn]);
+        $row = $stmt->fetch(PDO::FETCH_ASSOC);
+        return $row ? $this->hydrate($row) : null;
+    }
+
     /**
      * @param array<string,mixed> $data
      */
-    public function create(array $data): string
+    public function create(array $data): Book
     {
-        $sql = "INSERT INTO libros
-                (id, titulo, autor, isbn, anio_publicacion, descripcion, portada_url, portada_path,
-                 created_at, created_by, updated_at, updated_by, deleted_at, deleted_by)
-                VALUES
-                (:id, :titulo, :autor, :isbn, :anio_publicacion, :descripcion, :portada_url, :portada_path,
-                 :created_at, :created_by, :updated_at, :updated_by, :deleted_at, :deleted_by)";
+        $id        = (string)($data['id'] ?? $this->uuid4());
+        $now       = (string)($data['created_at'] ?? date('Y-m-d H:i:s'));
+        $createdBy = (string)($data['created_by'] ?? '00000000-0000-0000-0000-000000000001');
 
-        $stmt = $this->pdo->prepare($sql);
-        $stmt->bindValue(':id', (string)$data['id']);
-        $stmt->bindValue(':titulo', (string)$data['titulo']);
-        $stmt->bindValue(':autor', (string)$data['autor']);
-        $stmt->bindValue(':isbn', (string)$data['isbn']);
-        $stmt->bindValue(':anio_publicacion', $data['anio_publicacion'] !== null ? (int)$data['anio_publicacion'] : null, $data['anio_publicacion'] !== null ? PDO::PARAM_INT : PDO::PARAM_NULL);
-        $stmt->bindValue(':descripcion', $data['descripcion'] ?? null);
-        $stmt->bindValue(':portada_url', $data['portada_url'] ?? null);
-        $stmt->bindValue(':portada_path', $data['portada_path'] ?? null);
-        $stmt->bindValue(':created_at', (string)$data['created_at']);
-        $stmt->bindValue(':created_by', (string)$data['created_by']);
-        $stmt->bindValue(':updated_at', $data['updated_at'] ?? null);
-        $stmt->bindValue(':updated_by', $data['updated_by'] ?? null);
-        $stmt->bindValue(':deleted_at', $data['deleted_at'] ?? null);
-        $stmt->bindValue(':deleted_by', $data['deleted_by'] ?? null);
-        $stmt->execute();
+        $stmt = $this->pdo->prepare("
+            INSERT INTO libros (id, titulo, autor, isbn, anio_publicacion, descripcion, portada_url, portada_path, created_at, created_by)
+            VALUES (:id, :titulo, :autor, :isbn, :anio_publicacion, :descripcion, :portada_url, :portada_path, :created_at, :created_by)
+        ");
+        $stmt->execute([
+            ':id' => $id,
+            ':titulo' => (string)$data['titulo'],
+            ':autor' => (string)$data['autor'],
+            ':isbn' => (string)$data['isbn'],
+            ':anio_publicacion' => $data['anio_publicacion'] ?? null,
+            ':descripcion' => $data['descripcion'] ?? null,
+            ':portada_url' => $data['portada_url'] ?? null,
+            ':portada_path' => $data['portada_path'] ?? null,
+            ':created_at' => $now,
+            ':created_by' => $createdBy,
+        ]);
 
-        return (string)$data['id'];
+        return $this->findById($id) ?? new Book(
+            $id,
+            (string)$data['titulo'],
+            (string)$data['autor'],
+            (string)$data['isbn'],
+            isset($data['anio_publicacion']) ? (int)$data['anio_publicificacion'] : null,
+            isset($data['descripcion']) ? (string)$data['descripcion'] : null,
+            isset($data['portada_url']) ? (string)$data['portada_url'] : null,
+            isset($data['portada_path']) ? (string)$data['portada_path'] : null,
+            $now,
+            $createdBy,
+            null, null, null, null
+        );
     }
 
     /**
-     * @param string $id
      * @param array<string,mixed> $data
      */
-    public function update(string $id, array $data): bool
+    public function update(string $id, array $data): Book
     {
-        // Campos permitidos en update
-        $fields = [
-            'titulo', 'autor', 'isbn', 'anio_publicacion', 'descripcion',
-            'portada_url', 'portada_path', 'updated_at', 'updated_by'
-        ];
+        $now       = date('Y-m-d H:i:s');
+        $updatedBy = (string)($data['updated_by'] ?? '00000000-0000-0000-0000-000000000001');
 
-        $sets = [];
-        $params = [':id' => $id];
+        $stmt = $this->pdo->prepare("
+            UPDATE libros
+               SET titulo = :titulo,
+                   autor  = :autor,
+                   isbn   = :isbn,
+                   anio_publicacion = :anio_publicacion,
+                   descripcion = :descripcion,
+                   portada_url = :portada_url,
+                   portada_path = :portada_path,
+                   updated_at = :updated_at,
+                   updated_by = :updated_by
+             WHERE id = :id AND deleted_at IS NULL
+        ");
+        $stmt->execute([
+            ':id' => $id,
+            ':titulo' => (string)$data['titulo'],
+            ':autor' => (string)$data['autor'],
+            ':isbn' => (string)$data['isbn'],
+            ':anio_publicacion' => $data['anio_publicacion'] ?? null,
+            ':descripcion' => $data['descripcion'] ?? null,
+            ':portada_url' => $data['portada_url'] ?? null,
+            ':portada_path' => $data['portada_path'] ?? null,
+            ':updated_at' => $now,
+            ':updated_by' => $updatedBy,
+        ]);
 
-        foreach ($fields as $f) {
-            if (array_key_exists($f, $data)) {
-                $sets[] = "{$f} = :{$f}";
-                $params[":{$f}"] = $data[$f];
-            }
-        }
-
-        if (empty($sets)) {
-            return false;
-        }
-
-        $sql = "UPDATE libros SET " . implode(', ', $sets) . " WHERE id = :id";
-        $stmt = $this->pdo->prepare($sql);
-
-        foreach ($params as $k => $v) {
-            if (($k === ':anio_publicacion') && ($v === null)) {
-                $stmt->bindValue($k, null, PDO::PARAM_NULL);
-            } else {
-                $stmt->bindValue($k, $v);
-            }
-        }
-
-        $stmt->execute();
-        return $stmt->rowCount() > 0;
+        return $this->findById($id) ?? new Book(
+            $id,
+            (string)$data['titulo'],
+            (string)$data['autor'],
+            (string)$data['isbn'],
+            isset($data['anio_publicacion']) ? (int)$data['anio_publicacion'] : null,
+            isset($data['descripcion']) ? (string)$data['descripcion'] : null,
+            isset($data['portada_url']) ? (string)$data['portada_url'] : null,
+            isset($data['portada_path']) ? (string)$data['portada_path'] : null,
+            (string)($data['created_at'] ?? $now),
+            (string)($data['created_by'] ?? '00000000-0000-0000-0000-000000000001'),
+            $now,
+            $updatedBy,
+            null,
+            null
+        );
     }
 
-    public function softDelete(string $id, string $when, string $by): bool
+    public function softDelete(string $id, string $deletedBy): void
     {
-        $sql = "UPDATE libros SET deleted_at = :when, deleted_by = :by WHERE id = :id AND deleted_at IS NULL";
-        $stmt = $this->pdo->prepare($sql);
-        $stmt->bindValue(':when', $when);
-        $stmt->bindValue(':by', $by);
-        $stmt->bindValue(':id', $id);
-        $stmt->execute();
-        return $stmt->rowCount() > 0;
+        $stmt = $this->pdo->prepare("
+            UPDATE libros SET deleted_at = :ts, deleted_by = :uid WHERE id = :id AND deleted_at IS NULL
+        ");
+        $stmt->execute([
+            ':id' => $id,
+            ':ts' => date('Y-m-d H:i:s'),
+            ':uid' => $deletedBy,
+        ]);
     }
 
-    public function hardDelete(string $id): bool
+    public function hardDelete(string $id): void
     {
-        $sql = "DELETE FROM libros WHERE id = :id";
-        $stmt = $this->pdo->prepare($sql);
-        $stmt->bindValue(':id', $id);
-        $stmt->execute();
-        return $stmt->rowCount() > 0;
+        $stmt = $this->pdo->prepare("DELETE FROM libros WHERE id = :id");
+        $stmt->execute([':id' => $id]);
     }
 
-    /** @return array<string,mixed>|null */
-    public function findById(string $id): ?array
+    /** @param array<string,mixed> $row */
+    private function hydrate(array $row): Book
     {
-        $sql = "SELECT id, titulo, autor, isbn, anio_publicacion, descripcion, portada_url, portada_path,
-                       created_at, created_by, updated_at, updated_by, deleted_at, deleted_by
-                FROM libros WHERE id = :id LIMIT 1";
-        $stmt = $this->pdo->prepare($sql);
-        $stmt->bindValue(':id', $id);
-        $stmt->execute();
-        $row = $stmt->fetch(PDO::FETCH_ASSOC);
-        return $row !== false ? $row : null;
+        $createdAt = $row['created_at'] ?? date('Y-m-d H:i:s');
+        $createdBy = $row['created_by'] ?? '00000000-0000-0000-0000-000000000001';
+
+        return new Book(
+            (string)$row['id'],
+            (string)$row['titulo'],
+            (string)$row['autor'],
+            (string)$row['isbn'],
+            isset($row['anio_publicacion']) ? (int)$row['anio_publicacion'] : null,
+            isset($row['descripcion']) ? (string)$row['descripcion'] : null,
+            isset($row['portada_url']) ? (string)$row['portada_url'] : null,
+            isset($row['portada_path']) ? (string)$row['portada_path'] : null,
+            (string)$createdAt,
+            (string)$createdBy,
+            isset($row['updated_at']) ? (string)$row['updated_at'] : null,
+            isset($row['updated_by']) ? (string)$row['updated_by'] : null,
+            isset($row['deleted_at']) ? (string)$row['deleted_at'] : null,
+            isset($row['deleted_by']) ? (string)$row['deleted_by'] : null,
+        );
     }
 
-    /** @return array<string,mixed>|null */
-    public function findByIsbn(string $isbn): ?array
+    private function uuid4(): string
     {
-        $sql = "SELECT id, titulo, autor, isbn, anio_publicacion, descripcion, portada_url, portada_path,
-                       created_at, created_by, updated_at, updated_by, deleted_at, deleted_by
-                FROM libros WHERE isbn = :isbn LIMIT 1";
-        $stmt = $this->pdo->prepare($sql);
-        $stmt->bindValue(':isbn', $isbn);
-        $stmt->execute();
-        $row = $stmt->fetch(PDO::FETCH_ASSOC);
-        return $row !== false ? $row : null;
-    }
-
-    private function normalize(string $s): string
-    {
-        $s = mb_strtolower($s, 'UTF-8');
-        $s = \Normalizer::normalize($s, \Normalizer::FORM_D);
-        $s = preg_replace('/\p{Mn}+/u', '', (string)$s);
-        return $s ?? '';
+        $d = random_bytes(16);
+        $d[6] = chr((ord($d[6]) & 0x0f) | 0x40);
+        $d[8] = chr((ord($d[8]) & 0x3f) | 0x80);
+        return vsprintf('%s%s-%s-%s-%s-%s%s%s', str_split(bin2hex($d), 4));
     }
 }

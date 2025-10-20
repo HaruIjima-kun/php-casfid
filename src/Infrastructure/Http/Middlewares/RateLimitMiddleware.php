@@ -3,72 +3,63 @@ declare(strict_types=1);
 
 namespace App\Infrastructure\Http\Middlewares;
 
-use App\Infrastructure\Config\Config;
 use App\Infrastructure\Http\Request;
 use App\Infrastructure\Http\Response;
+use App\Infrastructure\Config\Config;
+use Redis;
 
-/**
- * Rate limiting muy simple (token/IP) a 60 req/min por defecto.
- * Lee el límite desde la Config para que PHPStan no marque la propiedad como "never read".
- *
- * NOTA: Implementación minimalista en memoria de proceso (no persistente).
- * En producción deberíamos usar Redis (clave por token/IP + ventana deslizante).
- */
-final class RateLimitMiddleware
+final class RateLimitMiddleware implements Middleware
 {
-    public function __construct(private Config $config)
-    {
-    }
+    public function __construct(
+        private Config $config,
+        private ?Redis $redis = null
+    ) {}
 
-    /**
-     * @param callable(Request):void $next
-     */
     public function handle(Request $req, callable $next): void
     {
-        // Leemos el límite de la config → así la propiedad $config SÍ se usa.
-        $limitPerMin = (int)($this->config->get('CLIENT_RATE_LIMIT_PER_MINUTE', '60') ?? '60');
-        if ($limitPerMin <= 0) {
-            $next($req);
-            return;
+        $limit  = (int)($this->config->get('RATE_LIMIT_MAX', '60') ?? '60');
+        $window = (int)($this->config->get('RATE_LIMIT_WINDOW', '60') ?? '60');
+
+        $token = $req->bearerToken() ?? 'ip:' . ($_SERVER['REMOTE_ADDR'] ?? 'cli');
+        $key   = "ratelimit:{$token}";
+
+        $remaining = $limit - 1;
+        $reset     = time() + $window;
+
+        if ($this->redis) {
+            $now = time();
+            $this->redis->multi();
+            $this->redis->incr($key);
+            $this->redis->expire($key, $window);
+            $res = $this->redis->exec();
+            $count = (int)($res[0] ?? 1);
+
+            $ttlVal = $this->redis->ttl($key); // int|false
+            if (is_int($ttlVal) && $ttlVal > 0) {
+                $reset = $now + $ttlVal;
+            }
+
+            $remaining = max(0, $limit - $count);
+
+            Response::header('X-RateLimit-Limit', (string)$limit);
+            Response::header('X-RateLimit-Remaining', (string)$remaining);
+            Response::header('X-RateLimit-Reset', (string)$reset);
+
+            if ($count > $limit) {
+                http_response_code(429);
+                $retryAfter = is_int($ttlVal) ? max(1, $ttlVal) : $window;
+                Response::header('Retry-After', (string)$retryAfter);
+                Response::json(null, [], [[
+                    'code' => 'RATE_LIMITED',
+                    'message' => 'Too Many Requests'
+                ]], 429);
+                return;
+            }
+        } else {
+            Response::header('X-RateLimit-Limit', (string)$limit);
+            Response::header('X-RateLimit-Remaining', (string)$remaining);
+            Response::header('X-RateLimit-Reset', (string)$reset);
         }
-
-        // Identidad del cliente: token Bearer si existe, si no IP remota.
-        $auth = $req->header('Authorization', '');
-        $token = '';
-        if (\str_starts_with($auth, 'Bearer ')) {
-            $token = substr($auth, 7);
-        }
-        $ip = $_SERVER['REMOTE_ADDR'] ?? '0.0.0.0';
-        $identity = $token !== '' ? ('tok:' . $token) : ('ip:' . $ip);
-
-        // Ventana de 60s muy simple en memoria (por proceso).
-        // Para demo/tests basta; en real -> Redis.
-        static $bucket = []; // array<string, array{window:int,count:int}>
-        $now = time();
-        $win = (int)floor($now / 60);
-
-        if (!isset($bucket[$identity]) || $bucket[$identity]['window'] !== $win) {
-            $bucket[$identity] = ['window' => $win, 'count' => 0];
-        }
-
-        if ($bucket[$identity]['count'] >= $limitPerMin) {
-            // 429 Too Many Requests
-            Response::json(
-                null,
-                [],
-                [
-                    [
-                        'code' => 'RATE_LIMITED',
-                        'message' => 'Too many requests',
-                    ],
-                ],
-                429
-            );
-            return;
-        }
-
-        // Consumimos un "token"
-        $bucket[$identity]['count']++;
 
         $next($req);
     }

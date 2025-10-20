@@ -56,16 +56,21 @@ final class Request
         }
 
         $headers = self::serverHeaders();
+        // ---- reemplazar bloque de construcción de $query en capture() ----
         $query = [];
-        // Aseguramos array<string,string>
-        foreach ($_GET ?? [] as $k => $v) {
-            if (is_array($v)) {
-                // Conservador: nos quedamos con la primera ocurrencia si viene array
-                $query[(string)$k] = (string)reset($v);
-            } else {
-                $query[(string)$k] = (string)$v;
+            // Evita $_GET directo para contentar a PHPStan y ser portable
+        $input = filter_input_array(INPUT_GET, FILTER_DEFAULT);
+        if (is_array($input)) {
+            /** @var array<string,mixed> $input */
+            foreach ($input as $k => $v) {
+                if (is_array($v)) {
+                    $query[(string)$k] = (string)reset($v);
+                } else {
+                    $query[(string)$k] = (string)$v;
+                }
             }
         }
+
 
         $json = [];
         $ct = strtolower($headers['content-type'] ?? $headers['Content-Type'] ?? '');

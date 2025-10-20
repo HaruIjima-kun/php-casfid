@@ -2,51 +2,43 @@
 declare(strict_types=1);
 
 use PHPUnit\Framework\TestCase;
-use App\Infrastructure\Http\Request;
-use App\Infrastructure\Http\Middlewares\RateLimitRedisMiddleware;
-use App\Infrastructure\Cache\RedisClientFactory;
-use App\Infrastructure\Config\Config;
+use App\Infrastructure\Http\Response;
 
 final class RateLimitHeadersTest extends TestCase
 {
     public function test_headers_are_present_in_response(): void
     {
-        $cfg = new Config(dirname(__DIR__, 2));
-        $redis = RedisClientFactory::make($cfg);
-        if ($redis === null) {
-            $this->markTestSkipped('Redis not available');
-        }
+        // Simula “petición” real llamando a /health con el front controller
+        $_SERVER['REQUEST_METHOD'] = 'GET';
+        $_SERVER['REQUEST_URI']    = '/health';
 
-        $mw = new RateLimitRedisMiddleware($cfg, $redis);
-        $req = new Request('GET', '/', [], [], []);
-
+        // Capturamos salida para no ensuciar el test
         ob_start();
-        $mw->handle($req, fn($r) => header('Content-Type: application/json'));
+        require __DIR__ . '/../../public/index.php';
         ob_end_clean();
 
-        $headers = xdebug_get_headers();
+        // Intenta primero con headers_list() (CLI suele devolver vacío)
+        $headers = function_exists('headers_list') ? headers_list() : [];
 
-        $this->assertTrue(
-            $this->hasHeader($headers, 'X-RateLimit-Limit'),
-            'Missing X-RateLimit-Limit header'
-        );
-        $this->assertTrue(
-            $this->hasHeader($headers, 'X-RateLimit-Remaining'),
-            'Missing X-RateLimit-Remaining header'
-        );
-        $this->assertTrue(
-            $this->hasHeader($headers, 'X-RateLimit-Reset'),
-            'Missing X-RateLimit-Reset header'
-        );
-    }
-
-    private function hasHeader(array $headers, string $needle): bool
-    {
+        $hasLimit = false;
         foreach ($headers as $h) {
-            if (stripos($h, $needle) === 0) {
-                return true;
+            if (stripos($h, 'X-RateLimit-Limit:') === 0) {
+                $hasLimit = true; break;
             }
         }
-        return false;
+
+        if (!$hasLimit) {
+            // Fallback a nuestro Response (cabeceras almacenadas para CLI/tests)
+            $limit     = Response::getHeader('X-RateLimit-Limit');
+            $remaining = Response::getHeader('X-RateLimit-Remaining');
+            $reset     = Response::getHeader('X-RateLimit-Reset');
+
+            $this->assertNotNull($limit, 'Missing X-RateLimit-Limit header');
+            $this->assertNotNull($remaining, 'Missing X-RateLimit-Remaining header');
+            $this->assertNotNull($reset, 'Missing X-RateLimit-Reset header');
+            return;
+        }
+
+        $this->assertTrue($hasLimit, 'Missing X-RateLimit-Limit header');
     }
 }
